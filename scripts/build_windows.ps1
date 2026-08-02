@@ -7,6 +7,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$Arguments
+    )
+
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath failed with exit code $LASTEXITCODE."
+    }
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $addinProject = Join-Path $repoRoot "excel-addin\WarpSpeed.ExcelAddIn\WarpSpeed.ExcelAddIn.csproj"
 $addinOutput = Join-Path $repoRoot "excel-addin\WarpSpeed.ExcelAddIn\bin\$Configuration\net48"
@@ -28,12 +43,12 @@ Write-Host ""
 
 if (-not $SkipTests) {
     Write-Host "Running Rust tests..."
-    cargo test -p warpspeed-engine
+    Invoke-Native "cargo" "test" "-p" "warpspeed-engine"
     Write-Host ""
 }
 
 Write-Host "Building Rust native engine..."
-cargo @cargoBuildArgs
+Invoke-Native "cargo" @cargoBuildArgs
 
 if (-not (Test-Path $engineDll)) {
     throw "Expected native engine DLL was not produced: $engineDll"
@@ -41,7 +56,7 @@ if (-not (Test-Path $engineDll)) {
 
 Write-Host ""
 Write-Host "Building Excel add-in..."
-dotnet build $addinProject -c $Configuration
+Invoke-Native "dotnet" "build" $addinProject "-c" $Configuration
 
 if (-not (Test-Path $addinOutput)) {
     throw "Expected add-in output directory was not produced: $addinOutput"

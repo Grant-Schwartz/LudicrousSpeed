@@ -6,6 +6,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>WarpSpeed.ExcelAddIn</RootNamespace>
     <AssemblyName>WarpSpeed.ExcelAddIn</AssemblyName>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,4 +19,3 @@
     <None Include="WarpSpeed.ExcelAddIn.dna" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
-
