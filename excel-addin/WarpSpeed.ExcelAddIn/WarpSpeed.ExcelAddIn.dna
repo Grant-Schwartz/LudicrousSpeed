@@ -1,0 +1,4 @@
+<DnaLibrary Name="WarpSpeed" RuntimeVersion="v4.0">
+  <ExternalLibrary Path="WarpSpeed.ExcelAddIn.dll" ExplicitExports="false" LoadFromBytes="true" Pack="true" />
+</DnaLibrary>
+
