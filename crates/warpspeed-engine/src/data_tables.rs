@@ -466,12 +466,7 @@ fn build_table_scenarios(
 fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> ScenarioCounts {
     let scenarios = match build_table_scenarios(model, table) {
         Ok(scenarios) => scenarios,
-        Err(_) => {
-            return ScenarioCounts {
-                unsupported: table.cell_count(),
-                ..ScenarioCounts::default()
-            }
-        }
+        Err(err) => return unsupported_table_result(model, table, table.cell_count(), &err),
     };
 
     let scenario_count = scenarios.len();
@@ -480,20 +475,30 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
         .as_ref()
         .and_then(|cell| resolve_cell(model, cell))
     else {
-        return ScenarioCounts {
-            unsupported: table.cell_count(),
-            ..ScenarioCounts::default()
-        };
+        return unsupported_table_result(
+            model,
+            table,
+            table.cell_count(),
+            &KernelError::detail(
+                "missing_formula_cell",
+                "Data table source formula cell could not be resolved in the workbook model.",
+            ),
+        );
     };
     let Some(column_input_cell) = table
         .column_input_cell
         .as_ref()
         .and_then(|cell| resolve_cell(model, cell))
     else {
-        return ScenarioCounts {
-            unsupported: table.cell_count(),
-            ..ScenarioCounts::default()
-        };
+        return unsupported_table_result(
+            model,
+            table,
+            table.cell_count(),
+            &KernelError::detail(
+                "missing_input_cell",
+                "Data table input cell could not be resolved in the workbook model.",
+            ),
+        );
     };
     let row_input_cell = table
         .row_input_cell
@@ -507,45 +512,35 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
             .map(|scenario| scenario.column_axis.as_ref()),
     ) {
         Ok(values) => values,
-        Err(_) => {
-            return ScenarioCounts {
-                unsupported: table.cell_count(),
-                ..ScenarioCounts::default()
-            }
-        }
+        Err(err) => return unsupported_table_result(model, table, table.cell_count(), &err),
     };
     let row_inputs = match comparable_values_for_optional_cells(
         model,
         scenarios.iter().map(|scenario| scenario.row_axis.as_ref()),
     ) {
         Ok(values) => values,
-        Err(_) => {
-            return ScenarioCounts {
-                unsupported: table.cell_count(),
-                ..ScenarioCounts::default()
-            }
-        }
+        Err(err) => return unsupported_table_result(model, table, table.cell_count(), &err),
     };
     let expected_values = match comparable_values_for_cells(
         model,
         scenarios.iter().map(|scenario| &scenario.output_cell),
     ) {
         Ok(values) => values,
-        Err(_) => {
-            return ScenarioCounts {
-                unsupported: table.cell_count(),
-                ..ScenarioCounts::default()
-            }
-        }
+        Err(err) => return unsupported_table_result(model, table, table.cell_count(), &err),
     };
 
     let mut overrides = HashMap::new();
     if (table.is_two_dimensional || table.dtr) && column_inputs.iter().any(Option::is_some) {
         let Some(values) = collect_optional_values(column_inputs) else {
-            return ScenarioCounts {
-                unsupported: table.cell_count(),
-                ..ScenarioCounts::default()
-            };
+            return unsupported_table_result(
+                model,
+                table,
+                table.cell_count(),
+                &KernelError::detail(
+                    "missing_axis_value",
+                    "One or more data table column-axis values could not be read.",
+                ),
+            );
         };
         overrides.insert(
             column_input_cell,
@@ -554,17 +549,27 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
     }
     if row_inputs.iter().any(Option::is_some) {
         let Some(values) = collect_optional_values(row_inputs) else {
-            return ScenarioCounts {
-                unsupported: table.cell_count(),
-                ..ScenarioCounts::default()
-            };
+            return unsupported_table_result(
+                model,
+                table,
+                table.cell_count(),
+                &KernelError::detail(
+                    "missing_axis_value",
+                    "One or more data table row-axis values could not be read.",
+                ),
+            );
         };
         let input_cell = if table.is_two_dimensional {
             let Some(row_input_cell) = row_input_cell else {
-                return ScenarioCounts {
-                    unsupported: table.cell_count(),
-                    ..ScenarioCounts::default()
-                };
+                return unsupported_table_result(
+                    model,
+                    table,
+                    table.cell_count(),
+                    &KernelError::detail(
+                        "missing_row_input_cell",
+                        "Two-variable data table row input cell could not be resolved.",
+                    ),
+                );
             };
             row_input_cell
         } else {
@@ -585,20 +590,20 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
 
     let actual_value = match context.eval_cell_with_iteration(formula_cell) {
         Ok(value) => value,
-        Err(_) => {
-            return ScenarioCounts {
-                unsupported: table.cell_count(),
-                ..ScenarioCounts::default()
-            }
-        }
+        Err(err) => return unsupported_table_result(model, table, table.cell_count(), &err),
     };
     let actual_values = match actual_value.into_comparable_values(&mut context) {
         Ok(values) if values.len() == scenario_count => values,
         _ => {
-            return ScenarioCounts {
-                unsupported: table.cell_count(),
-                ..ScenarioCounts::default()
-            }
+            return unsupported_table_result(
+                model,
+                table,
+                table.cell_count(),
+                &KernelError::detail(
+                    "invalid_kernel_result_shape",
+                    "Data table source formula did not produce one comparable value per scenario.",
+                ),
+            )
         }
     };
 
@@ -611,7 +616,67 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
             counts.mismatched += 1;
         }
     }
+    if counts.mismatched > 0 {
+        counts.diagnostics.push(data_table_diagnostic(
+            model,
+            table,
+            counts.mismatched,
+            &KernelError::detail(
+                "data_table_mismatch",
+                "Data table kernel result did not match Excel cached output for one or more cells.",
+            ),
+        ));
+    }
     counts
+}
+
+fn unsupported_table_result(
+    model: &Model<'_>,
+    table: &DataTableRegion,
+    affected_cells: usize,
+    error: &KernelError,
+) -> ScenarioCounts {
+    ScenarioCounts {
+        unsupported: affected_cells,
+        diagnostics: vec![data_table_diagnostic(model, table, affected_cells, error)],
+        ..ScenarioCounts::default()
+    }
+}
+
+fn data_table_diagnostic(
+    model: &Model<'_>,
+    table: &DataTableRegion,
+    affected_cells: usize,
+    error: &KernelError,
+) -> DataTableDiagnostic {
+    let mut diagnostic = data_table_diagnostic_without_model(table, affected_cells, error);
+    diagnostic.formula = table
+        .formula_cell
+        .as_ref()
+        .and_then(|cell| resolve_cell(model, cell))
+        .and_then(|cell| model.get_cell_formula(cell.sheet, cell.row, cell.column).ok())
+        .flatten();
+    diagnostic
+}
+
+fn data_table_diagnostic_without_model(
+    table: &DataTableRegion,
+    affected_cells: usize,
+    error: &KernelError,
+) -> DataTableDiagnostic {
+    DataTableDiagnostic {
+        code: error.code().to_string(),
+        message: error.message(),
+        table_id: table.id.clone(),
+        sheet_name: table.sheet_name.clone(),
+        range_address: table.range_address.clone(),
+        formula_cell: table
+            .formula_cell
+            .as_ref()
+            .map(|cell| format!("{}!{}", cell.sheet_name, cell.address)),
+        formula: None,
+        affected_cells,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -635,6 +700,33 @@ struct CriteriaSet {
 #[derive(Debug)]
 enum KernelError {
     Unsupported,
+    Detail { code: &'static str, message: String },
+}
+
+impl KernelError {
+    fn detail(code: &'static str, message: impl Into<String>) -> Self {
+        Self::Detail {
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported_formula_cone",
+            Self::Detail { code, .. } => code,
+        }
+    }
+
+    fn message(&self) -> String {
+        match self {
+            Self::Unsupported => {
+                "Data table formula cone uses a construct the kernel does not support yet."
+                    .to_string()
+            }
+            Self::Detail { message, .. } => message.clone(),
+        }
+    }
 }
 
 struct KernelContext<'a, 'm> {
