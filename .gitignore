@@ -1,8 +1,10 @@
 target/
 node_modules
 .codex_build/
-bin/
-obj/
+/bin/
+/obj/
+excel-addin/**/bin/
+excel-addin/**/obj/
 *.xll
 *.xll.config
 *.dna
