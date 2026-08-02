@@ -1,0 +1,16 @@
+target/
+node_modules
+.codex_build/
+bin/
+obj/
+*.xll
+*.xll.config
+*.dna
+*.packed.*
+*.log
+.DS_Store
+*.tmp.xlsx
+fixtures/generated/
+fixtures/external/
+outputs/**/*.png
+outputs/**/*.ndjson

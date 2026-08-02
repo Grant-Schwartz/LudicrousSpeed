@@ -1,0 +1,41 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    name: Build Windows Excel add-in
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build release package
+        shell: pwsh
+        run: ./scripts/build_windows.ps1 -Configuration Release
+
+      - name: Upload Windows add-in artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: warpspeed-windows-release
+          path: |
+            excel-addin/WarpSpeed.ExcelAddIn/bin/Release/net48/**
+            target/release/warpspeed-cli.exe
+            target/release/warpspeed_engine.dll
+          if-no-files-found: error
