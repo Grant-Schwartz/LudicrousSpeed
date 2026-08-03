@@ -34,7 +34,6 @@ namespace WarpSpeed.ExcelAddIn.Services
                 Excel.Range cell = (Excel.Range)sheet.Range["A1"];
 
                 cell.Formula = "=1+1";
-                excel.CalculateFullRebuild();
 
                 var formulaBefore = Convert.ToString(cell.Formula, CultureInfo.InvariantCulture) ?? "";
                 const double injectedValue = 12345.6789;
