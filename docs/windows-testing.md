@@ -109,6 +109,37 @@ anything beyond experimentation, verify:
 6. Only after 1–5 pass, consider flipping the default in
    `WorkbookSnapshotService.InlineSnapshotEnabled`.
 
+## Async Ribbon Acceptance Test (Unverified Feature)
+
+`WarpSpeedRibbon.RunAsync` (native engine call off Excel's UI thread via
+`ExcelAsyncUtil.QueueAsMacro`) was also written without access to Windows or
+Excel. The `ExcelAsyncUtil.QueueAsMacro` API itself was confirmed to exist in
+the pinned `ExcelDna.Integration` 1.9.0 package by inspecting the DLL, but the
+threading behavior has not been exercised. Before trusting
+`WARPSPEED_ASYNC_RUN=1` for anything beyond experimentation, verify:
+
+1. `dotnet build` / MSBuild succeeds.
+2. On a large workbook (e.g. `ALMS_v11.xlsx`), click `Recalculate with
+   WarpSpeed` with the variable set. Confirm Excel's UI stays responsive
+   (you can click cells, switch sheets, see the status bar message) while the
+   native call is in flight, rather than showing "Not Responding."
+3. Confirm the completion dialog, `_WarpSpeed_Report` sheet, and writeback
+   results are identical to a run with the variable unset (same workbook,
+   same inputs) — this flag should only change *when* work happens, not
+   *what* happens.
+4. Force a failure (e.g. temporarily rename `warpspeed_engine.dll`) and
+   confirm: an error dialog still appears, the status bar clears, and —
+   importantly — Excel's calculation mode is correctly restored rather than
+   left stuck on Manual (check `ExcelCalculationGuard`'s effect via
+   Formulas > Calculation Options after the failed run).
+5. Click the ribbon button twice in quick succession and confirm nothing
+   deadlocks or corrupts the report sheet (there's currently no
+   re-entrancy guard against overlapping runs in either the sync or async
+   path — this is a pre-existing gap, not new, but async runs make it easier
+   to trigger by clicking again before the first run's dialog appears).
+6. Only after 1–5 pass, consider flipping the default in
+   `WarpSpeedRibbon.AsyncRunEnabled`.
+
 ## Notes
 
 - `warpspeed_engine.dll` must sit beside the Excel add-in output because

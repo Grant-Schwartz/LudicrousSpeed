@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using ExcelDna.Integration;
 using ExcelDna.Integration.CustomUI;
@@ -20,6 +21,15 @@ namespace WarpSpeed.ExcelAddIn
         private readonly WorkbookSnapshotService snapshotService;
         private readonly LiveFormulaResultWriter resultWriter;
         private readonly ReportSheetWriter reportWriter = new ReportSheetWriter();
+
+        /// <summary>
+        /// Opt-in only: set WARPSPEED_ASYNC_RUN=1 to run the native engine
+        /// call off Excel's UI thread instead of blocking it. Off by default
+        /// until verified against live Excel -- see the doc comment on
+        /// <see cref="RunAsync"/>.
+        /// </summary>
+        private static bool AsyncRunEnabled =>
+            Environment.GetEnvironmentVariable("WARPSPEED_ASYNC_RUN") == "1";
 
         public WarpSpeedRibbon()
         {
@@ -101,6 +111,25 @@ namespace WarpSpeed.ExcelAddIn
 
         private void Run(string mode, bool includeExcelBaseline)
         {
+            if (AsyncRunEnabled)
+            {
+                RunAsync(mode, includeExcelBaseline);
+            }
+            else
+            {
+                RunSync(mode, includeExcelBaseline);
+            }
+        }
+
+        /// <summary>
+        /// The original, fully-synchronous path: everything runs on Excel's
+        /// UI thread (the ribbon callback thread), including the native
+        /// engine call, so Excel is unresponsive for the whole operation.
+        /// Kept as the default because it is the one this add-in has actually
+        /// been run with.
+        /// </summary>
+        private void RunSync(string mode, bool includeExcelBaseline)
+        {
             WorkbookSnapshot? snapshot = null;
             using var calculationGuard = ExcelCalculationGuard.Enter(disableNativeDataTables: !includeExcelBaseline);
             try
@@ -110,52 +139,190 @@ namespace WarpSpeed.ExcelAddIn
                 snapshot = snapshotService.Create(mode, excelBaselineMs);
                 var response = engineClient.Run(snapshot, out var nativeCallMs);
                 warpspeedStopwatch.Stop();
-                var writebackResult = resultWriter.Apply(
-                    response,
-                    string.Equals(mode, "recalculate", StringComparison.OrdinalIgnoreCase));
 
-                var hostMetrics = new HostRunMetrics
-                {
-                    ExcelBaselineMs = excelBaselineMs,
-                    SnapshotSaveMs = snapshot.SnapshotSaveMs,
-                    SnapshotSkipped = snapshot.SnapshotSkipped,
-                    NativeCallMs = nativeCallMs,
-                    WarpSpeedEndToEndMs = warpspeedStopwatch.ElapsedMilliseconds,
-                    WritebackMs = writebackResult.WritebackMs,
-                    WritebackStatus = writebackResult.Status,
-                    CalculationModeBeforeWriteback = writebackResult.CalculationBefore?.ToString(),
-                    CalculationModeAfterWriteback = writebackResult.CalculationAfter?.ToString(),
-                };
-
-                reportWriter.Write(response, hostMetrics);
-
-                if (!response.Ok)
-                {
-                    MessageBox.Show(response.Error, "WarpSpeed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
-
-                changeTracker.MarkRunSucceeded(snapshot);
-
-                var completionMessage = "WarpSpeed completed. See the _WarpSpeed_Report sheet for coverage, fallback, timing, and writeback details.";
-                if (string.Equals(writebackResult.Status, "blocked", StringComparison.OrdinalIgnoreCase))
-                {
-                    completionMessage += Environment.NewLine + Environment.NewLine + "Live formula writeback was blocked: " + writebackResult.Message;
-                }
-
-                MessageBox.Show(
-                    completionMessage,
-                    "WarpSpeed",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                FinishRun(mode, snapshot, response, excelBaselineMs, warpspeedStopwatch.ElapsedMilliseconds, nativeCallMs);
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message, "WarpSpeed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ShowError(ex.Message);
             }
             finally
             {
                 TryDeleteSnapshot(snapshot);
+            }
+        }
+
+        /// <summary>
+        /// NOT YET VERIFIED AGAINST LIVE EXCEL. Written and reasoned through
+        /// carefully but never built or run against live Excel (no
+        /// Windows/Excel available in the environment that authored it).
+        /// Runs only the native engine call (engineClient.Run -- pure FFI,
+        /// touches no Excel COM objects) on a background thread, so Excel's
+        /// UI thread is free while a large workbook is being evaluated.
+        /// Everything that touches the Excel object model -- snapshot
+        /// creation, the calculation-mode guard, writeback, the report
+        /// sheet, and the completion dialog -- stays on Excel's main thread,
+        /// either by running there directly (before the background call) or
+        /// via <see cref="ExcelAsyncUtil.QueueAsMacro"/> (after it), which is
+        /// Excel-DNA's documented mechanism for scheduling a callback back
+        /// onto Excel's main thread from a background thread. Before
+        /// enabling this by default: build on Windows, confirm it actually
+        /// keeps Excel responsive during a long native call on a large
+        /// workbook, and confirm the calculation-mode guard is reliably
+        /// restored (including if the native call throws) -- see the
+        /// acceptance checklist in docs/windows-testing.md.
+        /// </summary>
+        private void RunAsync(string mode, bool includeExcelBaseline)
+        {
+            WorkbookSnapshot? snapshot = null;
+            var calculationGuard = ExcelCalculationGuard.Enter(disableNativeDataTables: !includeExcelBaseline);
+            try
+            {
+                var excelBaselineMs = MeasureExcelBaseline(includeExcelBaseline);
+                var warpspeedStopwatch = Stopwatch.StartNew();
+                snapshot = snapshotService.Create(mode, excelBaselineMs);
+                var snapshotForBackgroundCall = snapshot;
+
+                SetStatusBar("WarpSpeed is calculating in the background...");
+
+                Task.Run(() =>
+                {
+                    EngineResponse? response = null;
+                    long nativeCallMs = 0;
+                    Exception? backgroundError = null;
+                    try
+                    {
+                        response = engineClient.Run(snapshotForBackgroundCall, out nativeCallMs);
+                    }
+                    catch (Exception ex)
+                    {
+                        backgroundError = ex;
+                    }
+
+                    ExcelAsyncUtil.QueueAsMacro(() =>
+                    {
+                        try
+                        {
+                            if (backgroundError != null)
+                            {
+                                ShowError(backgroundError.Message);
+                                return;
+                            }
+
+                            warpspeedStopwatch.Stop();
+                            FinishRun(
+                                mode,
+                                snapshotForBackgroundCall,
+                                response!,
+                                excelBaselineMs,
+                                warpspeedStopwatch.ElapsedMilliseconds,
+                                nativeCallMs);
+                        }
+                        catch (Exception ex)
+                        {
+                            ShowError(ex.Message);
+                        }
+                        finally
+                        {
+                            ClearStatusBar();
+                            calculationGuard.Dispose();
+                            TryDeleteSnapshot(snapshotForBackgroundCall);
+                        }
+                    });
+                });
+            }
+            catch (Exception ex)
+            {
+                ClearStatusBar();
+                calculationGuard.Dispose();
+                TryDeleteSnapshot(snapshot);
+                ShowError(ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Everything after the native engine call has returned a response:
+        /// applying writeback, writing the report sheet, and showing the
+        /// completion message. Shared by both the sync and async paths so
+        /// enabling WARPSPEED_ASYNC_RUN changes only how/when this runs, not
+        /// what it does.
+        /// </summary>
+        private void FinishRun(
+            string mode,
+            WorkbookSnapshot snapshot,
+            EngineResponse response,
+            long? excelBaselineMs,
+            long warpSpeedEndToEndMs,
+            long nativeCallMs)
+        {
+            var writebackResult = resultWriter.Apply(
+                response,
+                string.Equals(mode, "recalculate", StringComparison.OrdinalIgnoreCase));
+
+            var hostMetrics = new HostRunMetrics
+            {
+                ExcelBaselineMs = excelBaselineMs,
+                SnapshotSaveMs = snapshot.SnapshotSaveMs,
+                SnapshotSkipped = snapshot.SnapshotSkipped,
+                NativeCallMs = nativeCallMs,
+                WarpSpeedEndToEndMs = warpSpeedEndToEndMs,
+                WritebackMs = writebackResult.WritebackMs,
+                WritebackStatus = writebackResult.Status,
+                CalculationModeBeforeWriteback = writebackResult.CalculationBefore?.ToString(),
+                CalculationModeAfterWriteback = writebackResult.CalculationAfter?.ToString(),
+            };
+
+            reportWriter.Write(response, hostMetrics);
+
+            if (!response.Ok)
+            {
+                ShowError(response.Error);
+                return;
+            }
+
+            changeTracker.MarkRunSucceeded(snapshot);
+
+            var completionMessage = "WarpSpeed completed. See the _WarpSpeed_Report sheet for coverage, fallback, timing, and writeback details.";
+            if (string.Equals(writebackResult.Status, "blocked", StringComparison.OrdinalIgnoreCase))
+            {
+                completionMessage += Environment.NewLine + Environment.NewLine + "Live formula writeback was blocked: " + writebackResult.Message;
+            }
+
+            MessageBox.Show(
+                completionMessage,
+                "WarpSpeed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+
+        private static void ShowError(string? message)
+        {
+            MessageBox.Show(message, "WarpSpeed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+
+        private static void SetStatusBar(string message)
+        {
+            try
+            {
+                dynamic excel = ExcelDnaUtil.Application;
+                excel.StatusBar = message;
+            }
+            catch
+            {
+                // Status bar text is a courtesy, not load-bearing.
+            }
+        }
+
+        private static void ClearStatusBar()
+        {
+            try
+            {
+                dynamic excel = ExcelDnaUtil.Application;
+                excel.StatusBar = false;
+            }
+            catch
+            {
+                // Status bar text is a courtesy, not load-bearing.
             }
         }
 
