@@ -14,7 +14,9 @@ use ironcalc::base::{
 };
 
 use crate::graph::CellId;
-use crate::model::{DataTableBenchmarkSummary, DataTableDiagnostic, DataTableEvaluationStatus};
+use crate::model::{
+    DataTableBenchmarkSummary, DataTableDiagnostic, DataTableEvaluationStatus, FormulaValueKind,
+};
 
 const NUMERIC_TOLERANCE: f64 = 1e-7;
 const ITERATIVE_MAX_ITERATIONS: usize = 100;
@@ -127,6 +129,18 @@ enum ComparableValue {
     Number(f64),
     String(String),
     Boolean(bool),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct IterativeFormulaValue {
+    pub value_kind: FormulaValueKind,
+    pub value: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct IterativeFormulaResult {
+    pub values: HashMap<CellId, IterativeFormulaValue>,
+    pub diagnostics: Vec<String>,
 }
 
 pub(crate) fn parse_sheet_range(reference: &str) -> Option<SheetRange> {
@@ -372,6 +386,79 @@ pub(crate) fn evaluate_data_tables(
     summary.diagnostics.extend(counts.diagnostics);
     summary.status = data_table_status(&summary);
     summary
+}
+
+pub(crate) fn evaluate_iterative_formula_cells(
+    model: &Model<'_>,
+    cells: impl IntoIterator<Item = CellId>,
+) -> IterativeFormulaResult {
+    let mut context = KernelContext {
+        model,
+        scenario_count: 1,
+        overrides: HashMap::new(),
+        memo: HashMap::new(),
+        visiting: HashSet::new(),
+        active_cell: None,
+        dependency_memo: HashMap::new(),
+        dependency_visiting: HashSet::new(),
+        iterative_values: HashMap::new(),
+        used_iteration: false,
+        iteration_max_delta: 0.0,
+        reuse_static_formula_values: false,
+    };
+    let mut result = IterativeFormulaResult::default();
+    let mut seen = HashSet::new();
+
+    for cell in cells {
+        if !seen.insert(cell) {
+            continue;
+        }
+
+        match context
+            .eval_cell_with_iteration(cell)
+            .and_then(|value| value.into_comparable_values(&mut context))
+        {
+            Ok(values) if values.len() == 1 => {
+                if let Some(value) = values.into_iter().next().and_then(iterative_formula_value) {
+                    result.values.insert(cell, value);
+                } else {
+                    result.diagnostics.push(format!(
+                        "{}: Iterative formula evaluated to an error or unsupported scalar value.",
+                        iterative_cell_label(model, cell)
+                    ));
+                }
+            }
+            Ok(values) => result.diagnostics.push(format!(
+                "{}: {}",
+                iterative_cell_label(model, cell),
+                format!(
+                    "Iterative formula produced {} values; only scalar workbook formulas are writeback-safe.",
+                    values.len()
+                )
+            )),
+            Err(error) => result.diagnostics.push(format!(
+                "{}: {} ({})",
+                iterative_cell_label(model, cell),
+                error.message(),
+                error.code()
+            )),
+        }
+    }
+
+    result
+}
+
+fn iterative_cell_label(model: &Model<'_>, cell: CellId) -> String {
+    let sheet_name = model
+        .workbook
+        .worksheet(cell.sheet)
+        .ok()
+        .map(|worksheet| worksheet.name.as_str())
+        .unwrap_or("<unknown sheet>");
+    let address = number_to_column(cell.column)
+        .map(|column| format!("{column}{}", cell.row))
+        .unwrap_or_else(|| format!("R{}C{}", cell.row, cell.column));
+    format!("{sheet_name}!{address}")
 }
 
 fn build_table_scenarios(
@@ -623,6 +710,7 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
         iterative_values: HashMap::new(),
         used_iteration: false,
         iteration_max_delta: 0.0,
+        reuse_static_formula_values: true,
     };
 
     let actual_value = match context.eval_cell_with_iteration(formula_cell) {
@@ -821,6 +909,7 @@ struct KernelContext<'a, 'm> {
     iterative_values: HashMap<CellId, KernelValue>,
     used_iteration: bool,
     iteration_max_delta: f64,
+    reuse_static_formula_values: bool,
 }
 
 impl<'a, 'm> KernelContext<'a, 'm> {
@@ -857,7 +946,9 @@ impl<'a, 'm> KernelContext<'a, 'm> {
         }
 
         let value = if let Some(node) = self.formula_node_for_cell(cell) {
-            let result = if matches!(self.cell_depends_on_overrides(cell), Some(false)) {
+            let result = if self.reuse_static_formula_values
+                && matches!(self.cell_depends_on_overrides(cell), Some(false))
+            {
                 match self.static_cell_value(cell) {
                     Ok(value) if !kernel_value_contains_error_text(&value) => Ok(value),
                     _ => self.eval_formula_node(cell, &node),
@@ -3652,6 +3743,33 @@ fn format_comparable_value(value: &ComparableValue) -> String {
     }
 }
 
+fn iterative_formula_value(value: ComparableValue) -> Option<IterativeFormulaValue> {
+    match value {
+        ComparableValue::None => Some(IterativeFormulaValue {
+            value_kind: FormulaValueKind::Blank,
+            value: serde_json::json!(null),
+        }),
+        ComparableValue::Number(value) if value.is_finite() => Some(IterativeFormulaValue {
+            value_kind: FormulaValueKind::Number,
+            value: serde_json::json!(value),
+        }),
+        ComparableValue::Number(_) => None,
+        ComparableValue::String(value)
+            if comparable_value_is_error_text(&ComparableValue::String(value.clone())) =>
+        {
+            None
+        }
+        ComparableValue::String(value) => Some(IterativeFormulaValue {
+            value_kind: FormulaValueKind::String,
+            value: serde_json::json!(value),
+        }),
+        ComparableValue::Boolean(value) => Some(IterativeFormulaValue {
+            value_kind: FormulaValueKind::Boolean,
+            value: serde_json::json!(value),
+        }),
+    }
+}
+
 impl From<CellValue> for ComparableValue {
     fn from(value: CellValue) -> Self {
         match value {
@@ -3985,6 +4103,24 @@ mod tests {
         assert_eq!(summary.status, DataTableEvaluationStatus::Validated);
         assert_eq!(summary.validated_data_table_cells, 2);
         assert_eq!(summary.mismatched_data_table_cells, 0);
+    }
+
+    #[test]
+    fn evaluates_workbook_circular_formula_cells_iteratively() {
+        let mut model = Model::new_empty("workbook-iterative", "en", "UTC", "en").unwrap();
+        set(&mut model, 1, 2, "=C1+1");
+        set(&mut model, 1, 3, "=B1/2");
+
+        let result =
+            evaluate_iterative_formula_cells(&model, [CellId::new(0, 1, 2), CellId::new(0, 1, 3)]);
+
+        assert!(result.diagnostics.is_empty());
+        let b1 = result.values.get(&CellId::new(0, 1, 2)).unwrap();
+        let c1 = result.values.get(&CellId::new(0, 1, 3)).unwrap();
+        assert_eq!(b1.value_kind, FormulaValueKind::Number);
+        assert_eq!(c1.value_kind, FormulaValueKind::Number);
+        assert!((b1.value.as_f64().unwrap() - 2.0).abs() < 1e-6);
+        assert!((c1.value.as_f64().unwrap() - 1.0).abs() < 1e-6);
     }
 
     #[test]

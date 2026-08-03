@@ -8,7 +8,9 @@ use ironcalc::import::load_from_xlsx;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::data_tables::{evaluate_data_tables, summarize_data_tables, DataTableRegion};
+use crate::data_tables::{
+    evaluate_data_tables, evaluate_iterative_formula_cells, summarize_data_tables, DataTableRegion,
+};
 use crate::engine::CalcEngine;
 use crate::graph::{build_dependency_graph, CellId, DependencyGraph, DirtySummary};
 use crate::model::{
@@ -140,6 +142,16 @@ impl CalcEngine for IronCalcEngine {
                     }
 
                     let dirty = entry.graph.dirty_summary(&applied.changed_cells);
+                    entry.cached_formula_values =
+                        collect_circular_formula_values(&entry.model, &entry.graph, false);
+                    let circular_value_cells = entry
+                        .cached_formula_values
+                        .keys()
+                        .copied()
+                        .collect::<HashSet<_>>();
+                    entry
+                        .graph
+                        .allow_cached_circular_values(&circular_value_cells, &[]);
                     let eval_started = Instant::now();
                     entry.model.evaluate();
                     let ironcalc_ms = eval_started.elapsed().as_millis();
@@ -403,7 +415,7 @@ fn load_build_evaluate(snapshot: &WorkbookSnapshot) -> Result<LoadedWorkbook, En
 
     let graph_started = Instant::now();
     let mut graph = build_dependency_graph(&model);
-    let cached_formula_values = collect_cached_circular_formula_values(&model, &graph);
+    let cached_formula_values = collect_circular_formula_values(&model, &graph, true);
     let cached_value_cells = cached_formula_values
         .keys()
         .copied()
@@ -433,20 +445,42 @@ fn load_build_evaluate(snapshot: &WorkbookSnapshot) -> Result<LoadedWorkbook, En
     })
 }
 
-fn collect_cached_circular_formula_values(
+fn collect_circular_formula_values(
     model: &Model<'_>,
     graph: &DependencyGraph,
+    allow_cached_fallback: bool,
 ) -> HashMap<CellId, CachedFormulaValue> {
-    graph
-        .circular_formula_cells()
-        .filter_map(|cell| {
-            let (value_kind, value) = writeback_value_from_cell_value(
-                model.get_cell_value_by_index(cell.sheet, cell.row, cell.column),
+    let circular_cells = graph.circular_formula_cells().collect::<Vec<_>>();
+    let iterative_result = evaluate_iterative_formula_cells(model, circular_cells.iter().copied());
+    let mut values = iterative_result
+        .values
+        .into_iter()
+        .map(|(cell, value)| {
+            (
+                cell,
+                CachedFormulaValue {
+                    value_kind: value.value_kind,
+                    value: value.value,
+                },
             )
-            .ok()?;
-            Some((cell, CachedFormulaValue { value_kind, value }))
         })
-        .collect()
+        .collect::<HashMap<_, _>>();
+
+    if allow_cached_fallback {
+        for cell in circular_cells {
+            if values.contains_key(&cell) {
+                continue;
+            }
+            let Ok((value_kind, value)) = writeback_value_from_cell_value(
+                model.get_cell_value_by_index(cell.sheet, cell.row, cell.column),
+            ) else {
+                continue;
+            };
+            values.insert(cell, CachedFormulaValue { value_kind, value });
+        }
+    }
+
+    values
 }
 
 fn apply_changed_cells(
