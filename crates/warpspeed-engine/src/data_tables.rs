@@ -914,6 +914,13 @@ struct KernelContext<'a, 'm> {
 
 impl<'a, 'm> KernelContext<'a, 'm> {
     fn eval_cell_with_iteration(&mut self, cell: CellId) -> Result<KernelValue, KernelError> {
+        // `used_iteration` reflects whether *this* evaluation revisited a cell
+        // still being computed. It must start false for each top-level cell,
+        // otherwise a leftover `true` from a previous, unrelated cell forces
+        // every subsequent cell through the (expensive, memo-clearing) retry
+        // loop below even when its value was already fully converged and
+        // sitting in `memo`.
+        self.used_iteration = false;
         let mut value = self.eval_cell(cell)?;
         if !self.used_iteration {
             return Ok(value);
