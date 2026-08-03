@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using ExcelDna.Integration;
 using ExcelDna.Integration.CustomUI;
@@ -10,6 +11,7 @@ using WarpSpeed.ExcelAddIn.Services;
 
 namespace WarpSpeed.ExcelAddIn
 {
+    [ComVisible(true)]
     public sealed class WarpSpeedRibbon : ExcelRibbon, IExcelAddIn
     {
         private readonly NativeEngineClient engineClient = new NativeEngineClient();
