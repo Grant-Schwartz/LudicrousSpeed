@@ -7,7 +7,8 @@ use ironcalc::{
     export::save_to_xlsx,
 };
 use warpspeed_engine::{
-    CalcMode, ChangedCell, DataTableEvaluationStatus, WarpSpeedEngine, WorkbookSnapshot,
+    CalcMode, ChangedCell, DataTableEvaluationStatus, FormulaValueKind, WarpSpeedEngine,
+    WorkbookSnapshot, WritebackMode,
 };
 use zip::{write::FileOptions, ZipArchive, ZipWriter};
 
@@ -22,7 +23,20 @@ fn evaluates_basic_ma_workbook_and_preserves_formula_writeback_policy() {
     assert!(result.analysis.ironcalc_can_evaluate);
     assert!(result.analysis.fallback_reasons.is_empty());
     assert!(result.writeback.preserve_formulas);
-    assert_eq!(result.writeback.value_cells_to_update, 0);
+    assert_eq!(result.writeback.mode, WritebackMode::LiveFormulaCache);
+    assert_eq!(result.writeback.value_cells_to_update, 5);
+    assert_eq!(result.writeback.cells.len(), 5);
+    assert!(result
+        .writeback
+        .cells
+        .iter()
+        .any(|cell| cell.sheet_name == "Sheet1"
+            && cell.address == "B1"
+            && cell.value_kind == FormulaValueKind::Number
+            && cell.value == serde_json::json!(125.0)));
+    assert_eq!(result.writeback.attempted, 0);
+    assert_eq!(result.writeback.written, 0);
+    assert_eq!(result.writeback.failed, 0);
 }
 
 #[test]
@@ -32,6 +46,8 @@ fn reports_speedup_when_excel_baseline_is_supplied() {
 
     assert_eq!(result.benchmark.excel_baseline_ms, Some(1_000));
     assert!(result.benchmark.speedup_vs_excel.is_some());
+    assert_eq!(result.writeback.mode, WritebackMode::None);
+    assert_eq!(result.writeback.value_cells_to_update, 0);
 }
 
 #[test]
@@ -96,6 +112,30 @@ fn validates_openxml_data_table_in_parallel_mode() {
         .fallback_reasons
         .iter()
         .any(|reason| reason.code == "data_table_formula"));
+    assert_eq!(result.writeback.mode, WritebackMode::None);
+    assert_eq!(result.writeback.value_cells_to_update, 0);
+}
+
+#[test]
+fn skips_formula_writeback_when_fallback_regions_are_present() {
+    let fixture = create_data_table_fixture();
+    let mut snapshot = snapshot_for(&fixture, CalcMode::Recalculate, None);
+    snapshot.evaluate_data_tables = true;
+
+    let result = WarpSpeedEngine::new().run(&snapshot).unwrap();
+
+    assert!(result
+        .analysis
+        .fallback_reasons
+        .iter()
+        .any(|reason| reason.code == "data_table_formula"));
+    assert_eq!(result.writeback.mode, WritebackMode::None);
+    assert_eq!(result.writeback.value_cells_to_update, 0);
+    assert!(result
+        .writeback
+        .skipped_reasons
+        .iter()
+        .any(|reason| reason.code == "fallback_regions_present"));
 }
 
 #[test]
@@ -150,6 +190,14 @@ fn reuses_model_and_graph_for_warm_value_edits() {
     assert!(result.benchmark.graph_cache_hit);
     assert!(!result.benchmark.result_cache_hit);
     assert!(result.benchmark.dirty_formula_cells > 0);
+    assert_eq!(result.writeback.mode, WritebackMode::LiveFormulaCache);
+    assert!(result
+        .writeback
+        .cells
+        .iter()
+        .any(|cell| cell.sheet_name == "Sheet1"
+            && cell.address == "B1"
+            && cell.value == serde_json::json!(175.0)));
 }
 
 fn run_engine(

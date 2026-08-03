@@ -61,6 +61,29 @@ The second report should show a warm dirty run, not a no-change result cache hit
 - `Dirty data tables` > `0`
 - `Snapshot skipped` should be `TRUE` when change tracking is certain.
 
+## Live Formula-Cache Writeback Acceptance Test
+
+Use a simple workbook first so fallback regions do not intentionally block the
+MVP:
+
+1. Create a workbook with `A1 = 100`, `A2 = 25`, and `B1 = SUM(A1:A2)`.
+2. Click `WarpSpeed > Recalculate with WarpSpeed`.
+3. Check `_WarpSpeed_Report`.
+
+Expected shape for the gated MVP:
+
+- `Writeback mode` = `live_formula_cache`
+- `Candidate cells` > `0`
+- `Host writeback status` = `blocked` unless a supported formula-cache setter
+  passes the scratch-workbook probe.
+- `Writeback skipped reasons` includes `probe_blocked` when blocked.
+- The model formula cell still contains its original formula.
+
+If a future supported setter passes the probe, the same smoke test should show
+`Written cells` > `0`, Excel should remain in manual calculation mode, and
+`Restore Last Results` should run a full Excel rebuild and restore the previous
+calculation mode.
+
 ## Notes
 
 - `warpspeed_engine.dll` must sit beside the Excel add-in output because

@@ -19,6 +19,7 @@ namespace WarpSpeed.ExcelAddIn.Services
 
         private Excel.Application? application;
         private bool subscribed;
+        private int suspendCount;
 
         public void Start()
         {
@@ -42,6 +43,27 @@ namespace WarpSpeed.ExcelAddIn.Services
             application.SheetChange -= OnSheetChange;
             subscribed = false;
             application = null;
+        }
+
+        public IDisposable SuspendTracking()
+        {
+            lock (gate)
+            {
+                suspendCount++;
+            }
+
+            return new TrackingSuspension(this);
+        }
+
+        private void ResumeTracking()
+        {
+            lock (gate)
+            {
+                if (suspendCount > 0)
+                {
+                    suspendCount--;
+                }
+            }
         }
 
         public WorkbookChangeSet CaptureForSnapshot(object workbookObject)
@@ -120,6 +142,14 @@ namespace WarpSpeed.ExcelAddIn.Services
         {
             try
             {
+                lock (gate)
+                {
+                    if (suspendCount > 0)
+                    {
+                        return;
+                    }
+                }
+
                 var worksheet = sheetObject as Excel.Worksheet;
                 if (worksheet == null || target == null)
                 {
@@ -187,6 +217,28 @@ namespace WarpSpeed.ExcelAddIn.Services
                 {
                     // Nothing else to do without a reliable workbook identity.
                 }
+            }
+        }
+
+        private sealed class TrackingSuspension : IDisposable
+        {
+            private readonly WorkbookChangeTracker owner;
+            private bool disposed;
+
+            public TrackingSuspension(WorkbookChangeTracker owner)
+            {
+                this.owner = owner;
+            }
+
+            public void Dispose()
+            {
+                if (disposed)
+                {
+                    return;
+                }
+
+                disposed = true;
+                owner.ResumeTracking();
             }
         }
 

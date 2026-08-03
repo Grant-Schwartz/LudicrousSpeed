@@ -9,6 +9,8 @@ mod xlsx_sanitize;
 pub use engine::{CalcEngine, WarpSpeedEngine};
 pub use model::{
     AnalysisSummary, BenchmarkSummary, CalcMode, CalcPlan, CalcResult, CalculationStrategy,
-    ChangedCell, DataTableBenchmarkSummary, DataTableDiagnostic, DataTableEvaluationStatus, EngineError,
-    ExcelWritebackPlan, FallbackReason, FormulaCoverage, WorkbookSnapshot,
+    ChangedCell, DataTableBenchmarkSummary, DataTableDiagnostic, DataTableEvaluationStatus,
+    EngineError, ExcelWritebackPlan, FallbackReason, FormulaCoverage, FormulaValueKind,
+    FormulaWritebackCell, WorkbookSnapshot, WritebackCellFailure, WritebackIssueSummary,
+    WritebackMode,
 };

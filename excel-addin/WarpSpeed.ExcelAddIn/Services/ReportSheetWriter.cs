@@ -8,7 +8,9 @@ namespace WarpSpeed.ExcelAddIn.Services
     internal sealed class ReportSheetWriter
     {
         private const string ReportSheetName = "_WarpSpeed_Report";
+        private const int MaxDataTableDiagnostics = 20;
         private const int MaxFallbackSamples = 50;
+        private const int MaxWritebackFailures = 20;
 
         public void Write(EngineResponse response, HostRunMetrics hostMetrics)
         {
@@ -99,12 +101,124 @@ namespace WarpSpeed.ExcelAddIn.Services
             sheet.Range["B40"].Value2 = result.Benchmark.DataTables.DataTableEvalMs;
             sheet.Range["A41"].Value2 = "Data table workers";
             sheet.Range["B41"].Value2 = result.Benchmark.DataTables.DataTableParallelism;
-            sheet.Range["A43"].Value2 = "Preserve formulas";
-            sheet.Range["B43"].Value2 = result.Writeback.PreserveFormulas;
-            sheet.Range["A44"].Value2 = "Cells to update";
-            sheet.Range["B44"].Value2 = result.Writeback.ValueCellsToUpdate;
 
-            var row = 46;
+            var row = 43;
+            sheet.Range[$"A{row}"].Value2 = "Data table diagnostics";
+            sheet.Range[$"B{row}"].Value2 = result.Benchmark.DataTables.Diagnostics.Count;
+            if (result.Benchmark.DataTables.Diagnostics.Count > 0)
+            {
+                row += 2;
+                sheet.Range[$"A{row}"].Value2 = "Data table diagnostic code";
+                sheet.Range[$"B{row}"].Value2 = "Table";
+                sheet.Range[$"C{row}"].Value2 = "Formula cell";
+                sheet.Range[$"D{row}"].Value2 = "Affected cells";
+                sheet.Range[$"E{row}"].Value2 = "Message";
+                sheet.Range[$"F{row}"].Value2 = "Formula";
+
+                var dataTableSampleCount = Math.Min(MaxDataTableDiagnostics, result.Benchmark.DataTables.Diagnostics.Count);
+                for (var index = 0; index < dataTableSampleCount; index++)
+                {
+                    var diagnostic = result.Benchmark.DataTables.Diagnostics[index];
+                    row++;
+                    sheet.Range[$"A{row}"].Value2 = diagnostic.Code;
+                    sheet.Range[$"B{row}"].Value2 = diagnostic.TableId;
+                    sheet.Range[$"C{row}"].Value2 = diagnostic.FormulaCell;
+                    sheet.Range[$"D{row}"].Value2 = diagnostic.AffectedCells;
+                    sheet.Range[$"E{row}"].Value2 = diagnostic.Message;
+                    sheet.Range[$"F{row}"].Value2 = diagnostic.Formula;
+                }
+
+                if (result.Benchmark.DataTables.Diagnostics.Count > dataTableSampleCount)
+                {
+                    row++;
+                    sheet.Range[$"A{row}"].Value2 = "Additional data table diagnostics omitted";
+                    sheet.Range[$"B{row}"].Value2 = result.Benchmark.DataTables.Diagnostics.Count - dataTableSampleCount;
+                }
+            }
+
+            row += 2;
+            sheet.Range[$"A{row}"].Value2 = "Preserve formulas";
+            sheet.Range[$"B{row}"].Value2 = result.Writeback.PreserveFormulas;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Cells to update";
+            sheet.Range[$"B{row}"].Value2 = result.Writeback.ValueCellsToUpdate;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Writeback mode";
+            sheet.Range[$"B{row}"].Value2 = result.Writeback.Mode;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Host writeback status";
+            sheet.Range[$"B{row}"].Value2 = hostMetrics.WritebackStatus;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Host writeback ms";
+            sheet.Range[$"B{row}"].Value2 = hostMetrics.WritebackMs;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Calc mode before writeback";
+            sheet.Range[$"B{row}"].Value2 = hostMetrics.CalculationModeBeforeWriteback;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Calc mode after writeback";
+            sheet.Range[$"B{row}"].Value2 = hostMetrics.CalculationModeAfterWriteback;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Candidate cells";
+            sheet.Range[$"B{row}"].Value2 = result.Writeback.Cells.Count;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Attempted cells";
+            sheet.Range[$"B{row}"].Value2 = result.Writeback.Attempted;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Written cells";
+            sheet.Range[$"B{row}"].Value2 = result.Writeback.Written;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Skipped cells";
+            sheet.Range[$"B{row}"].Value2 = result.Writeback.Skipped;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Failed cells";
+            sheet.Range[$"B{row}"].Value2 = result.Writeback.Failed;
+
+            row += 2;
+            sheet.Range[$"A{row}"].Value2 = "Writeback skipped reasons";
+            sheet.Range[$"B{row}"].Value2 = result.Writeback.SkippedReasons.Count;
+            if (result.Writeback.SkippedReasons.Count > 0)
+            {
+                row += 2;
+                sheet.Range[$"A{row}"].Value2 = "Writeback skip code";
+                sheet.Range[$"B{row}"].Value2 = "Count";
+                sheet.Range[$"C{row}"].Value2 = "Message";
+                foreach (var reason in result.Writeback.SkippedReasons)
+                {
+                    row++;
+                    sheet.Range[$"A{row}"].Value2 = reason.Code;
+                    sheet.Range[$"B{row}"].Value2 = reason.Count;
+                    sheet.Range[$"C{row}"].Value2 = reason.Message;
+                }
+            }
+
+            row += 2;
+            sheet.Range[$"A{row}"].Value2 = "Writeback failed samples";
+            sheet.Range[$"B{row}"].Value2 = result.Writeback.FailedSamples.Count;
+            if (result.Writeback.FailedSamples.Count > 0)
+            {
+                row += 2;
+                sheet.Range[$"A{row}"].Value2 = "Sheet";
+                sheet.Range[$"B{row}"].Value2 = "Address";
+                sheet.Range[$"C{row}"].Value2 = "Message";
+                var writebackFailureCount = Math.Min(MaxWritebackFailures, result.Writeback.FailedSamples.Count);
+                for (var index = 0; index < writebackFailureCount; index++)
+                {
+                    var failure = result.Writeback.FailedSamples[index];
+                    row++;
+                    sheet.Range[$"A{row}"].Value2 = failure.SheetName;
+                    sheet.Range[$"B{row}"].Value2 = failure.Address;
+                    sheet.Range[$"C{row}"].Value2 = failure.Message;
+                }
+
+                if (result.Writeback.FailedSamples.Count > writebackFailureCount)
+                {
+                    row++;
+                    sheet.Range[$"A{row}"].Value2 = "Additional writeback failures omitted";
+                    sheet.Range[$"B{row}"].Value2 = result.Writeback.FailedSamples.Count - writebackFailureCount;
+                }
+            }
+
+            row += 2;
             sheet.Range[$"A{row}"].Value2 = "Fallback reasons";
             sheet.Range[$"B{row}"].Value2 = result.Analysis.FallbackReasons.Count;
 

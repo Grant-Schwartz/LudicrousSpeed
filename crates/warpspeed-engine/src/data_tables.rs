@@ -9,6 +9,7 @@ use ironcalc::base::{
         token::{OpCompare, OpProduct, OpSum, OpUnary},
         utils::number_to_column,
     },
+    types::DefinedName,
     Model,
 };
 
@@ -18,6 +19,7 @@ use crate::model::{DataTableBenchmarkSummary, DataTableDiagnostic, DataTableEval
 const NUMERIC_TOLERANCE: f64 = 1e-7;
 const ITERATIVE_MAX_ITERATIONS: usize = 100;
 const ITERATIVE_MAX_CHANGE: f64 = 1e-7;
+const ROOT_SOLVER_TOLERANCE: f64 = 1e-10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SheetCellRef {
@@ -241,10 +243,9 @@ pub(crate) fn summarize_data_tables(
                     table.cell_count(),
                     &KernelError::detail(
                         "ineligible_data_table",
-                        table
-                            .unsupported_reason
-                            .clone()
-                            .unwrap_or_else(|| "Data table shape is not eligible for kernel evaluation.".to_string()),
+                        table.unsupported_reason.clone().unwrap_or_else(|| {
+                            "Data table shape is not eligible for kernel evaluation.".to_string()
+                        }),
                     ),
                 )
             })
@@ -380,15 +381,24 @@ fn build_table_scenarios(
     let mut scenarios = Vec::new();
 
     let Some(formula_cell) = table.formula_cell.clone() else {
-        return Err(KernelError::Unsupported);
+        return Err(KernelError::detail(
+            "missing_formula_cell",
+            "Data table source formula cell could not be inferred.",
+        ));
     };
     let Some(column_input) = table.column_input_cell.clone() else {
-        return Err(KernelError::Unsupported);
+        return Err(KernelError::detail(
+            "missing_input_cell",
+            "Data table input cell could not be parsed.",
+        ));
     };
 
     if resolve_cell(model, &formula_cell).is_none() || resolve_cell(model, &column_input).is_none()
     {
-        return Err(KernelError::Unsupported);
+        return Err(KernelError::detail(
+            "missing_table_reference",
+            "Data table source formula or input cell could not be resolved.",
+        ));
     }
     if table.is_two_dimensional
         && !table
@@ -396,7 +406,10 @@ fn build_table_scenarios(
             .as_ref()
             .is_some_and(|row_input| resolve_cell(model, row_input).is_some())
     {
-        return Err(KernelError::Unsupported);
+        return Err(KernelError::detail(
+            "missing_row_input_cell",
+            "Two-variable data table row input cell could not be resolved.",
+        ));
     }
 
     if table.is_two_dimensional {
@@ -404,16 +417,25 @@ fn build_table_scenarios(
             let Some(row_axis) =
                 SheetCellRef::new(&table.sheet_name, row, table.range.start_column - 1)
             else {
-                return Err(KernelError::Unsupported);
+                return Err(KernelError::detail(
+                    "invalid_axis_cell",
+                    "Data table row-axis cell address could not be created.",
+                ));
             };
             for column in table.range.start_column..=table.range.end_column {
                 let Some(column_axis) =
                     SheetCellRef::new(&table.sheet_name, table.range.start_row - 1, column)
                 else {
-                    return Err(KernelError::Unsupported);
+                    return Err(KernelError::detail(
+                        "invalid_axis_cell",
+                        "Data table column-axis cell address could not be created.",
+                    ));
                 };
                 let Some(output_cell) = SheetCellRef::new(&table.sheet_name, row, column) else {
-                    return Err(KernelError::Unsupported);
+                    return Err(KernelError::detail(
+                        "invalid_output_cell",
+                        "Data table output cell address could not be created.",
+                    ));
                 };
                 scenarios.push(DataTableScenario {
                     column_axis: Some(column_axis),
@@ -427,12 +449,18 @@ fn build_table_scenarios(
             let Some(column_axis) =
                 SheetCellRef::new(&table.sheet_name, table.range.start_row - 1, column)
             else {
-                return Err(KernelError::Unsupported);
+                return Err(KernelError::detail(
+                    "invalid_axis_cell",
+                    "One-variable data table axis cell address could not be created.",
+                ));
             };
             let Some(output_cell) =
                 SheetCellRef::new(&table.sheet_name, table.range.start_row, column)
             else {
-                return Err(KernelError::Unsupported);
+                return Err(KernelError::detail(
+                    "invalid_output_cell",
+                    "One-variable data table output cell address could not be created.",
+                ));
             };
             scenarios.push(DataTableScenario {
                 column_axis: Some(column_axis),
@@ -445,12 +473,18 @@ fn build_table_scenarios(
             let Some(row_axis) =
                 SheetCellRef::new(&table.sheet_name, row, table.range.start_column - 1)
             else {
-                return Err(KernelError::Unsupported);
+                return Err(KernelError::detail(
+                    "invalid_axis_cell",
+                    "One-variable data table axis cell address could not be created.",
+                ));
             };
             let Some(output_cell) =
                 SheetCellRef::new(&table.sheet_name, row, table.range.start_column)
             else {
-                return Err(KernelError::Unsupported);
+                return Err(KernelError::detail(
+                    "invalid_output_cell",
+                    "One-variable data table output cell address could not be created.",
+                ));
             };
             scenarios.push(DataTableScenario {
                 column_axis: None,
@@ -583,6 +617,9 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
         overrides,
         memo: HashMap::new(),
         visiting: HashSet::new(),
+        active_cell: None,
+        dependency_memo: HashMap::new(),
+        dependency_visiting: HashSet::new(),
         iterative_values: HashMap::new(),
         used_iteration: false,
         iteration_max_delta: 0.0,
@@ -592,10 +629,10 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
         Ok(value) => value,
         Err(err) => return unsupported_table_result(model, table, table.cell_count(), &err),
     };
-    let actual_values = match actual_value.into_comparable_values(&mut context) {
-        Ok(values) if values.len() == scenario_count => values,
-        _ => {
-            return unsupported_table_result(
+    let actual_values =
+        match actual_value.into_comparable_values(&mut context) {
+            Ok(values) if values.len() == scenario_count => values,
+            _ => return unsupported_table_result(
                 model,
                 table,
                 table.cell_count(),
@@ -603,28 +640,47 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
                     "invalid_kernel_result_shape",
                     "Data table source formula did not produce one comparable value per scenario.",
                 ),
-            )
-        }
-    };
+            ),
+        };
 
     let mut counts = ScenarioCounts::default();
     counts.evaluated = scenario_count;
-    for (actual, expected) in actual_values.iter().zip(expected_values.iter()) {
+    let mut first_mismatch: Option<String> = None;
+    for ((actual, expected), scenario) in actual_values
+        .iter()
+        .zip(expected_values.iter())
+        .zip(scenarios.iter())
+    {
         if values_match(actual, expected) {
             counts.validated += 1;
         } else {
             counts.mismatched += 1;
+            if first_mismatch.is_none() {
+                first_mismatch = Some(format!(
+                    "First mismatch at {}!{}: expected {}, got {}.",
+                    scenario.output_cell.sheet_name,
+                    scenario.output_cell.address,
+                    format_comparable_value(expected),
+                    format_comparable_value(actual)
+                ));
+            }
         }
     }
     if counts.mismatched > 0 {
+        let message = match first_mismatch {
+            Some(sample) => format!(
+                "Data table kernel result did not match Excel cached output for one or more cells. {sample}"
+            ),
+            None => {
+                "Data table kernel result did not match Excel cached output for one or more cells."
+                    .to_string()
+            }
+        };
         counts.diagnostics.push(data_table_diagnostic(
             model,
             table,
             counts.mismatched,
-            &KernelError::detail(
-                "data_table_mismatch",
-                "Data table kernel result did not match Excel cached output for one or more cells.",
-            ),
+            &KernelError::detail("data_table_mismatch", message),
         ));
     }
     counts
@@ -654,7 +710,11 @@ fn data_table_diagnostic(
         .formula_cell
         .as_ref()
         .and_then(|cell| resolve_cell(model, cell))
-        .and_then(|cell| model.get_cell_formula(cell.sheet, cell.row, cell.column).ok())
+        .and_then(|cell| {
+            model
+                .get_cell_formula(cell.sheet, cell.row, cell.column)
+                .ok()
+        })
         .flatten();
     diagnostic
 }
@@ -697,6 +757,26 @@ struct CriteriaSet {
     criteria: Vec<ComparableValue>,
 }
 
+struct SumProductArray {
+    values_by_term: Vec<Vec<f64>>,
+    rows: usize,
+    columns: usize,
+}
+
+impl SumProductArray {
+    fn is_scalar(&self) -> bool {
+        self.rows == 1 && self.columns == 1
+    }
+
+    fn values_for_term(&self, term_index: usize) -> &[f64] {
+        if self.is_scalar() {
+            &self.values_by_term[0]
+        } else {
+            &self.values_by_term[term_index]
+        }
+    }
+}
+
 #[derive(Debug)]
 enum KernelError {
     Unsupported,
@@ -735,6 +815,9 @@ struct KernelContext<'a, 'm> {
     overrides: HashMap<CellId, KernelValue>,
     memo: HashMap<CellId, KernelValue>,
     visiting: HashSet<CellId>,
+    active_cell: Option<CellId>,
+    dependency_memo: HashMap<CellId, Option<bool>>,
+    dependency_visiting: HashSet<CellId>,
     iterative_values: HashMap<CellId, KernelValue>,
     used_iteration: bool,
     iteration_max_delta: f64,
@@ -774,7 +857,15 @@ impl<'a, 'm> KernelContext<'a, 'm> {
         }
 
         let value = if let Some(node) = self.formula_node_for_cell(cell) {
-            self.eval_node(&node, cell)?
+            let result = if matches!(self.cell_depends_on_overrides(cell), Some(false)) {
+                match self.static_cell_value(cell) {
+                    Ok(value) if !kernel_value_contains_error_text(&value) => Ok(value),
+                    _ => self.eval_formula_node(cell, &node),
+                }
+            } else {
+                self.eval_formula_node(cell, &node)
+            };
+            result.map_err(|error| self.contextualize_cell_error(cell, error))?
         } else {
             self.static_cell_value(cell)?
         };
@@ -785,6 +876,13 @@ impl<'a, 'm> KernelContext<'a, 'm> {
         }
         self.memo.insert(cell, value.clone());
         Ok(value)
+    }
+
+    fn eval_formula_node(&mut self, cell: CellId, node: &Node) -> Result<KernelValue, KernelError> {
+        let previous_active_cell = self.active_cell.replace(cell);
+        let result = self.eval_node(node, cell);
+        self.active_cell = previous_active_cell;
+        result
     }
 
     fn eval_node(&mut self, node: &Node, context: CellId) -> Result<KernelValue, KernelError> {
@@ -907,17 +1005,305 @@ impl<'a, 'm> KernelContext<'a, 'm> {
                 value => Ok(value),
             },
             Node::EmptyArgKind => Ok(KernelValue::empty(self.scenario_count)),
+            Node::WrongReferenceKind { sheet_name, row, column, .. } => Err(KernelError::detail(
+                "invalid_reference",
+                format!(
+                    "Formula contains an invalid reference to {}R{}C{}.",
+                    sheet_name.as_deref().unwrap_or("<current sheet>"),
+                    row,
+                    column
+                ),
+            )),
+            Node::WrongRangeKind { .. } => Err(KernelError::detail(
+                "invalid_range",
+                "Formula contains an invalid range reference.",
+            )),
+            Node::OpRangeKind { .. } => Err(KernelError::detail(
+                "unsupported_range_operator",
+                "Formula uses the range operator in a shape the data-table kernel does not support yet.",
+            )),
+            Node::InvalidFunctionKind { name, args } if name.eq_ignore_ascii_case("sumproduct") => {
+                self.eval_sumproduct(args, context)
+            }
+            Node::InvalidFunctionKind { name, .. } => Err(KernelError::detail(
+                "invalid_function",
+                format!("Formula contains invalid or unknown function {name}."),
+            )),
+            Node::ArrayKind(_) => Err(KernelError::detail(
+                "unsupported_array_constant",
+                "Formula uses an array constant, which the data-table kernel does not support yet.",
+            )),
+            Node::DefinedNameKind((name, scope, _)) => {
+                self.eval_defined_name(name, *scope, context)
+            }
+            Node::TableNameKind(name) => Err(KernelError::detail(
+                "structured_table_reference",
+                format!("Formula uses structured table reference {name}, which is not supported in the data-table kernel yet."),
+            )),
+            Node::WrongVariableKind(name) => Err(KernelError::detail(
+                "wrong_variable",
+                format!("Formula contains unsupported variable reference {name}."),
+            )),
+            Node::ErrorKind(error) => Err(KernelError::detail(
+                "formula_error_literal",
+                format!("Formula contains Excel error literal {error:?}."),
+            )),
+            Node::ParseErrorKind { formula, message, position } => Err(KernelError::detail(
+                "parse_error",
+                format!("Formula parse error at position {position}: {message}. Formula: {formula}"),
+            )),
+        }
+    }
+
+    fn eval_defined_name(
+        &mut self,
+        name: &str,
+        scope: Option<u32>,
+        context: CellId,
+    ) -> Result<KernelValue, KernelError> {
+        let Some(formula) = self
+            .resolve_defined_name(name, scope, context)
+            .map(|defined_name| defined_name.formula.clone())
+        else {
+            return Err(KernelError::detail(
+                "defined_name_reference",
+                format!("Formula uses defined name {name}, but the workbook definition could not be resolved."),
+            ));
+        };
+        let formula = formula.trim().trim_start_matches('=').trim();
+        if formula.is_empty() || formula.starts_with('#') {
+            return Err(KernelError::detail(
+                "defined_name_reference",
+                format!("Defined name {name} points to an invalid or empty reference."),
+            ));
+        }
+
+        if let Ok(number) = formula.parse::<f64>() {
+            return Ok(KernelValue::number(number, self.scenario_count));
+        }
+        if formula.eq_ignore_ascii_case("TRUE") {
+            return Ok(KernelValue::boolean(true, self.scenario_count));
+        }
+        if formula.eq_ignore_ascii_case("FALSE") {
+            return Ok(KernelValue::boolean(false, self.scenario_count));
+        }
+        if let Some(text) = formula
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+        {
+            return Ok(KernelValue::string(text.to_string(), self.scenario_count));
+        }
+
+        let default_sheet = self
+            .model
+            .workbook
+            .worksheet(context.sheet)
+            .ok()
+            .map(|worksheet| worksheet.name.as_str())
+            .unwrap_or_default();
+        if let Some(cell_ref) = parse_sheet_cell_ref(formula, default_sheet) {
+            if let Some(cell) = resolve_cell(self.model, &cell_ref) {
+                return self.eval_cell(cell);
+            }
+        }
+        if let Some(range) = kernel_range_from_reference(self.model, formula, default_sheet) {
+            return Ok(KernelValue::Range(range));
+        }
+
+        Err(KernelError::detail(
+            "defined_name_reference",
+            format!("Defined name {name} uses a formula or external reference the data-table kernel cannot inline yet."),
+        ))
+    }
+
+    fn resolve_defined_name(
+        &self,
+        name: &str,
+        scope: Option<u32>,
+        context: CellId,
+    ) -> Option<&DefinedName> {
+        let scoped_sheet_id = scope
+            .and_then(|sheet| self.model.workbook.worksheets.get(sheet as usize))
+            .or_else(|| self.model.workbook.worksheets.get(context.sheet as usize))
+            .map(|worksheet| worksheet.sheet_id);
+
+        if let Some(sheet_id) = scoped_sheet_id {
+            if let Some(defined_name) = self.model.workbook.defined_names.iter().find(|candidate| {
+                candidate.sheet_id == Some(sheet_id) && candidate.name.eq_ignore_ascii_case(name)
+            }) {
+                return Some(defined_name);
+            }
+        }
+
+        self.model.workbook.defined_names.iter().find(|candidate| {
+            candidate.sheet_id.is_none() && candidate.name.eq_ignore_ascii_case(name)
+        })
+    }
+
+    fn cell_depends_on_overrides(&mut self, cell: CellId) -> Option<bool> {
+        if self.overrides.contains_key(&cell) {
+            return Some(true);
+        }
+        if let Some(result) = self.dependency_memo.get(&cell) {
+            return *result;
+        }
+        if !self.dependency_visiting.insert(cell) {
+            return Some(true);
+        }
+
+        let result = self
+            .formula_node_for_cell(cell)
+            .map(|node| self.node_depends_on_overrides(&node, cell))
+            .unwrap_or(Some(false));
+        self.dependency_visiting.remove(&cell);
+        self.dependency_memo.insert(cell, result);
+        result
+    }
+
+    fn node_depends_on_overrides(&mut self, node: &Node, context: CellId) -> Option<bool> {
+        match node {
+            Node::BooleanKind(_)
+            | Node::NumberKind(_)
+            | Node::StringKind(_)
+            | Node::EmptyArgKind
+            | Node::ErrorKind(_) => Some(false),
+            Node::ReferenceKind {
+                sheet_index,
+                absolute_row,
+                absolute_column,
+                row,
+                column,
+                ..
+            } => self.cell_depends_on_overrides(CellId::new(
+                *sheet_index,
+                absolute_coord(*row, context.row, *absolute_row),
+                absolute_coord(*column, context.column, *absolute_column),
+            )),
+            Node::RangeKind {
+                sheet_index,
+                absolute_row1,
+                absolute_column1,
+                row1,
+                column1,
+                absolute_row2,
+                absolute_column2,
+                row2,
+                column2,
+                ..
+            } => {
+                let range = cells_for_rect(
+                    *sheet_index,
+                    absolute_coord(*row1, context.row, *absolute_row1),
+                    absolute_coord(*column1, context.column, *absolute_column1),
+                    absolute_coord(*row2, context.row, *absolute_row2),
+                    absolute_coord(*column2, context.column, *absolute_column2),
+                );
+                self.range_depends_on_overrides(&range)
+            }
+            Node::OpSumKind { left, right, .. }
+            | Node::OpProductKind { left, right, .. }
+            | Node::OpPowerKind { left, right }
+            | Node::CompareKind { left, right, .. }
+            | Node::OpConcatenateKind { left, right } => {
+                self.nodes_depend_on_overrides([left.as_ref(), right.as_ref()], context)
+            }
+            Node::UnaryKind { right, .. } | Node::ImplicitIntersection { child: right, .. } => {
+                self.node_depends_on_overrides(right, context)
+            }
+            Node::FunctionKind { kind, args } => {
+                let function_name = format!("{kind:?}");
+                if matches!(function_name.as_str(), "Indirect" | "Offset") {
+                    return None;
+                }
+                self.nodes_depend_on_overrides(args.iter(), context)
+            }
+            Node::InvalidFunctionKind { name, args } if name.eq_ignore_ascii_case("sumproduct") => {
+                self.nodes_depend_on_overrides(args.iter(), context)
+            }
+            Node::DefinedNameKind((name, scope, _)) => {
+                self.defined_name_depends_on_overrides(name, *scope, context)
+            }
             Node::WrongReferenceKind { .. }
             | Node::WrongRangeKind { .. }
             | Node::OpRangeKind { .. }
-            | Node::InvalidFunctionKind { .. }
             | Node::ArrayKind(_)
-            | Node::DefinedNameKind(_)
             | Node::TableNameKind(_)
             | Node::WrongVariableKind(_)
-            | Node::ErrorKind(_)
-            | Node::ParseErrorKind { .. } => Err(KernelError::Unsupported),
+            | Node::InvalidFunctionKind { .. }
+            | Node::ParseErrorKind { .. } => None,
         }
+    }
+
+    fn nodes_depend_on_overrides<'n>(
+        &mut self,
+        nodes: impl IntoIterator<Item = &'n Node>,
+        context: CellId,
+    ) -> Option<bool> {
+        let mut unknown = false;
+        for node in nodes {
+            match self.node_depends_on_overrides(node, context) {
+                Some(true) => return Some(true),
+                Some(false) => {}
+                None => unknown = true,
+            }
+        }
+        if unknown {
+            None
+        } else {
+            Some(false)
+        }
+    }
+
+    fn range_depends_on_overrides(&mut self, range: &KernelRange) -> Option<bool> {
+        let mut unknown = false;
+        for cell in &range.cells {
+            match self.cell_depends_on_overrides(*cell) {
+                Some(true) => return Some(true),
+                Some(false) => {}
+                None => unknown = true,
+            }
+        }
+        if unknown {
+            None
+        } else {
+            Some(false)
+        }
+    }
+
+    fn defined_name_depends_on_overrides(
+        &mut self,
+        name: &str,
+        scope: Option<u32>,
+        context: CellId,
+    ) -> Option<bool> {
+        let formula = self
+            .resolve_defined_name(name, scope, context)
+            .map(|defined_name| defined_name.formula.clone())?;
+        let formula = formula.trim().trim_start_matches('=').trim();
+        if formula.is_empty() || formula.starts_with('#') {
+            return None;
+        }
+        if formula.parse::<f64>().is_ok()
+            || formula.eq_ignore_ascii_case("TRUE")
+            || formula.eq_ignore_ascii_case("FALSE")
+            || (formula.starts_with('"') && formula.ends_with('"'))
+        {
+            return Some(false);
+        }
+
+        let default_sheet = self
+            .model
+            .workbook
+            .worksheet(context.sheet)
+            .ok()
+            .map(|worksheet| worksheet.name.as_str())
+            .unwrap_or_default();
+        if let Some(cell_ref) = parse_sheet_cell_ref(formula, default_sheet) {
+            return resolve_cell(self.model, &cell_ref)
+                .and_then(|cell| self.cell_depends_on_overrides(cell));
+        }
+        kernel_range_from_reference(self.model, formula, default_sheet)
+            .and_then(|range| self.range_depends_on_overrides(&range))
     }
 
     fn eval_function(
@@ -947,6 +1333,8 @@ impl<'a, 'm> KernelContext<'a, 'm> {
             "Not" => self.eval_not(args, context),
             "Or" => self.eval_boolean_aggregate(args, context, BooleanAggregate::Or),
             "If" => self.eval_if(args, context),
+            "Iferror" => self.eval_iferror(args, context),
+            "Iserror" => self.eval_iserror(args, context),
             "Choose" => self.eval_choose(args, context),
             "Index" => self.eval_index(args, context),
             "Match" => self.eval_match(args, context),
@@ -960,8 +1348,19 @@ impl<'a, 'm> KernelContext<'a, 'm> {
             "Maxifs" => self.eval_ifs_aggregate(args, context, IfsAggregate::Max),
             "Npv" => self.eval_npv(args, context),
             "Irr" => self.eval_irr(args, context),
+            "Xirr" => self.eval_xirr(args, context),
+            "Sumproduct" | "SumProduct" | "SUMPRODUCT" => self.eval_sumproduct(args, context),
             "Pmt" => self.eval_pmt(args, context),
-            _ => Err(KernelError::Unsupported),
+            "Date" => self.eval_date(args, context),
+            "Year" => self.eval_date_part(args, context, DatePart::Year),
+            "Month" => self.eval_date_part(args, context, DatePart::Month),
+            "Day" => self.eval_date_part(args, context, DatePart::Day),
+            _ => Err(KernelError::detail(
+                "unsupported_function",
+                format!(
+                    "Function {function_name} is not implemented in the data-table kernel yet."
+                ),
+            )),
         }
     }
 
@@ -1407,6 +1806,62 @@ impl<'a, 'm> KernelContext<'a, 'm> {
         ))
     }
 
+    fn eval_iferror(&mut self, args: &[Node], context: CellId) -> Result<KernelValue, KernelError> {
+        if args.len() != 2 {
+            return Err(KernelError::Unsupported);
+        }
+
+        let primary = match self.eval_node(&args[0], context) {
+            Ok(value) => value.into_comparable_values(self)?,
+            Err(error) if kernel_error_is_excel_error_like(&error) => {
+                return self.eval_node(&args[1], context);
+            }
+            Err(error) => return Err(error),
+        };
+
+        if !primary.iter().any(comparable_value_is_error_text) {
+            return Ok(KernelValue::Values(primary));
+        }
+
+        let fallback = self
+            .eval_node(&args[1], context)?
+            .into_comparable_values(self)?;
+        Ok(KernelValue::Values(
+            primary
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    if comparable_value_is_error_text(&value) {
+                        fallback[index].clone()
+                    } else {
+                        value
+                    }
+                })
+                .collect(),
+        ))
+    }
+
+    fn eval_iserror(&mut self, args: &[Node], context: CellId) -> Result<KernelValue, KernelError> {
+        if args.len() != 1 {
+            return Err(KernelError::Unsupported);
+        }
+
+        let values = match self.eval_node(&args[0], context) {
+            Ok(value) => value.into_comparable_values(self)?,
+            Err(error) if kernel_error_is_excel_error_like(&error) => {
+                return Ok(KernelValue::boolean(true, self.scenario_count));
+            }
+            Err(error) => return Err(error),
+        };
+
+        Ok(KernelValue::Values(
+            values
+                .into_iter()
+                .map(|value| ComparableValue::Boolean(comparable_value_is_error_text(&value)))
+                .collect(),
+        ))
+    }
+
     fn eval_choose(&mut self, args: &[Node], context: CellId) -> Result<KernelValue, KernelError> {
         if args.len() < 2 {
             return Err(KernelError::Unsupported);
@@ -1442,20 +1897,110 @@ impl<'a, 'm> KernelContext<'a, 'm> {
         Ok(KernelValue::Values(result))
     }
 
+    fn eval_sumproduct(
+        &mut self,
+        args: &[Node],
+        context: CellId,
+    ) -> Result<KernelValue, KernelError> {
+        if args.is_empty() {
+            return Err(KernelError::Unsupported);
+        }
+
+        let arrays = args
+            .iter()
+            .map(|arg| {
+                let value = self.eval_node(arg, context)?;
+                self.sumproduct_array(value)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let target_shape = arrays
+            .iter()
+            .find(|array| !array.is_scalar())
+            .map(|array| (array.rows, array.columns))
+            .unwrap_or((1, 1));
+
+        if arrays
+            .iter()
+            .any(|array| !array.is_scalar() && (array.rows, array.columns) != target_shape)
+        {
+            return Err(KernelError::Unsupported);
+        }
+
+        let term_count = target_shape.0 * target_shape.1;
+        let mut result = vec![0.0; self.scenario_count];
+        for term_index in 0..term_count {
+            for scenario_index in 0..self.scenario_count {
+                let product = arrays
+                    .iter()
+                    .map(|array| array.values_for_term(term_index)[scenario_index])
+                    .product::<f64>();
+                result[scenario_index] += product;
+            }
+        }
+
+        Ok(KernelValue::Values(
+            result.into_iter().map(ComparableValue::Number).collect(),
+        ))
+    }
+
+    fn sumproduct_array(&mut self, value: KernelValue) -> Result<SumProductArray, KernelError> {
+        match value {
+            KernelValue::Values(values) => Ok(SumProductArray {
+                values_by_term: vec![sumproduct_numbers(values)?],
+                rows: 1,
+                columns: 1,
+            }),
+            KernelValue::Range(range) => {
+                let values_by_term = range
+                    .cells
+                    .iter()
+                    .map(|cell| {
+                        self.eval_cell(*cell)?
+                            .into_comparable_values(self)
+                            .and_then(sumproduct_numbers)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(SumProductArray {
+                    values_by_term,
+                    rows: range.rows,
+                    columns: range.columns,
+                })
+            }
+        }
+    }
+
     fn eval_index(&mut self, args: &[Node], context: CellId) -> Result<KernelValue, KernelError> {
         if args.len() < 2 || args.len() > 3 {
             return Err(KernelError::Unsupported);
         }
         let range = self.range_from_node(&args[0], context)?;
-        let row_numbers = {
-            let value = self.eval_node(&args[1], context)?;
-            coerce_numbers(self, value)?
-        };
-        let column_numbers = if args.len() == 3 {
-            let value = self.eval_node(&args[2], context)?;
-            coerce_numbers(self, value)?
+        let first_selector = if node_is_empty_arg(&args[1]) {
+            None
         } else {
-            vec![1.0; self.scenario_count]
+            let value = self.eval_node(&args[1], context)?;
+            Some(coerce_numbers(self, value)?)
+        };
+        let second_selector = if args.len() == 3 {
+            if node_is_empty_arg(&args[2]) {
+                None
+            } else {
+                let value = self.eval_node(&args[2], context)?;
+                Some(coerce_numbers(self, value)?)
+            }
+        } else {
+            None
+        };
+
+        let (row_numbers, column_numbers) = match (first_selector, second_selector) {
+            (Some(selector), None) if range.rows == 1 => (vec![1.0; self.scenario_count], selector),
+            (Some(selector), None) => (selector, vec![1.0; self.scenario_count]),
+            (None, Some(selector)) if range.rows == 1 => (vec![1.0; self.scenario_count], selector),
+            (Some(row_selector), Some(column_selector)) => (row_selector, column_selector),
+            (None, Some(selector)) if range.columns == 1 => {
+                (selector, vec![1.0; self.scenario_count])
+            }
+            _ => return Err(KernelError::Unsupported),
         };
 
         let mut result = Vec::with_capacity(self.scenario_count);
@@ -1605,14 +2150,22 @@ impl<'a, 'm> KernelContext<'a, 'm> {
         let row_offset = constant_i32(coerce_numbers(self, rows_value)?)?;
         let column_offset = constant_i32(coerce_numbers(self, columns_value)?)?;
         let height = if args.len() >= 4 {
-            let height_value = self.eval_node(&args[3], context)?;
-            constant_i32(coerce_numbers(self, height_value)?)?
+            if node_is_empty_arg(&args[3]) {
+                base.rows as i32
+            } else {
+                let height_value = self.eval_node(&args[3], context)?;
+                constant_i32(coerce_numbers(self, height_value)?)?
+            }
         } else {
             base.rows as i32
         };
         let width = if args.len() == 5 {
-            let width_value = self.eval_node(&args[4], context)?;
-            constant_i32(coerce_numbers(self, width_value)?)?
+            if node_is_empty_arg(&args[4]) {
+                base.columns as i32
+            } else {
+                let width_value = self.eval_node(&args[4], context)?;
+                constant_i32(coerce_numbers(self, width_value)?)?
+            }
         } else {
             base.columns as i32
         };
@@ -1741,6 +2294,101 @@ impl<'a, 'm> KernelContext<'a, 'm> {
         Ok(KernelValue::Values(result))
     }
 
+    fn eval_xirr(&mut self, args: &[Node], context: CellId) -> Result<KernelValue, KernelError> {
+        if args.len() < 2 || args.len() > 3 {
+            return Err(KernelError::Unsupported);
+        }
+
+        let values_value = self.eval_node(&args[0], context)?;
+        let cash_flows = flatten_numbers(self, values_value)?;
+        let dates_value = self.eval_node(&args[1], context)?;
+        let date_values = flatten_numbers(self, dates_value)?;
+        if cash_flows.len() != date_values.len() || cash_flows.len() < 2 {
+            return Err(KernelError::Unsupported);
+        }
+
+        let guesses = if args.len() == 3 {
+            let guess_value = self.eval_node(&args[2], context)?;
+            coerce_numbers(self, guess_value)?
+        } else {
+            vec![0.1; self.scenario_count]
+        };
+
+        let mut result = Vec::with_capacity(self.scenario_count);
+        for scenario_index in 0..self.scenario_count {
+            let flows = cash_flows
+                .iter()
+                .map(|values| values[scenario_index])
+                .collect::<Vec<_>>();
+            let dates = date_values
+                .iter()
+                .map(|values| values[scenario_index].trunc())
+                .collect::<Vec<_>>();
+            let Some(value) = solve_xirr(&flows, &dates, guesses[scenario_index]) else {
+                return Err(KernelError::Unsupported);
+            };
+            result.push(ComparableValue::Number(value));
+        }
+        Ok(KernelValue::Values(result))
+    }
+
+    fn eval_date(&mut self, args: &[Node], context: CellId) -> Result<KernelValue, KernelError> {
+        if args.len() != 3 {
+            return Err(KernelError::Unsupported);
+        }
+        let year_value = self.eval_node(&args[0], context)?;
+        let month_value = self.eval_node(&args[1], context)?;
+        let day_value = self.eval_node(&args[2], context)?;
+        let years = coerce_numbers(self, year_value)?;
+        let months = coerce_numbers(self, month_value)?;
+        let days = coerce_numbers(self, day_value)?;
+
+        let mut result = Vec::with_capacity(self.scenario_count);
+        for scenario_index in 0..self.scenario_count {
+            let Some(year) = finite_truncated_i32(years[scenario_index]) else {
+                return Err(KernelError::Unsupported);
+            };
+            let Some(month) = finite_truncated_i32(months[scenario_index]) else {
+                return Err(KernelError::Unsupported);
+            };
+            let Some(day) = finite_truncated_i32(days[scenario_index]) else {
+                return Err(KernelError::Unsupported);
+            };
+            let Some(serial) = excel_date_serial(year, month, day) else {
+                return Err(KernelError::Unsupported);
+            };
+            result.push(ComparableValue::Number(serial));
+        }
+        Ok(KernelValue::Values(result))
+    }
+
+    fn eval_date_part(
+        &mut self,
+        args: &[Node],
+        context: CellId,
+        part: DatePart,
+    ) -> Result<KernelValue, KernelError> {
+        if args.len() != 1 {
+            return Err(KernelError::Unsupported);
+        }
+        let serial_value = self.eval_node(&args[0], context)?;
+        let serials = coerce_numbers(self, serial_value)?;
+
+        let mut result = Vec::with_capacity(self.scenario_count);
+        for serial in serials {
+            let Some((year, month, day)) = excel_serial_to_date(serial) else {
+                return Err(KernelError::Unsupported);
+            };
+            let value = match part {
+                DatePart::Year => year,
+                DatePart::Month => month,
+                DatePart::Day => day,
+            };
+            result.push(ComparableValue::Number(value as f64));
+        }
+        Ok(KernelValue::Values(result))
+    }
+
     fn eval_implicit_intersection(
         &mut self,
         range: KernelRange,
@@ -1753,17 +2401,13 @@ impl<'a, 'm> KernelContext<'a, 'm> {
             if let Some(cell) = range
                 .cells
                 .iter()
-                .find(|cell| cell.sheet == context.sheet && cell.column == context.column)
+                .find(|cell| cell.column == context.column)
             {
                 return self.eval_cell(*cell);
             }
         }
         if range.columns == 1 {
-            if let Some(cell) = range
-                .cells
-                .iter()
-                .find(|cell| cell.sheet == context.sheet && cell.row == context.row)
-            {
+            if let Some(cell) = range.cells.iter().find(|cell| cell.row == context.row) {
                 return self.eval_cell(*cell);
             }
         }
@@ -1858,11 +2502,53 @@ impl<'a, 'm> KernelContext<'a, 'm> {
             .cloned()
     }
 
+    fn contextualize_cell_error(&self, cell: CellId, error: KernelError) -> KernelError {
+        if !matches!(error, KernelError::Unsupported) {
+            return error;
+        }
+
+        let location = self.cell_label(cell);
+        let formula = self
+            .model
+            .get_cell_formula(cell.sheet, cell.row, cell.column)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "<formula unavailable>".to_string());
+        KernelError::detail(
+            "unsupported_formula_cell",
+            format!(
+                "Data-table kernel hit an unsupported construct while evaluating {location}: {formula}"
+            ),
+        )
+    }
+
+    fn cell_label(&self, cell: CellId) -> String {
+        let sheet_name = self
+            .model
+            .workbook
+            .worksheet(cell.sheet)
+            .ok()
+            .map(|worksheet| worksheet.name.as_str())
+            .unwrap_or("<unknown sheet>");
+        let address = number_to_column(cell.column)
+            .map(|column| format!("{column}{}", cell.row))
+            .unwrap_or_else(|| format!("R{}C{}", cell.row, cell.column));
+        format!("{sheet_name}!{address}")
+    }
+
     fn static_cell_value(&self, cell: CellId) -> Result<KernelValue, KernelError> {
         let value = self
             .model
             .get_cell_value_by_index(cell.sheet, cell.row, cell.column)
-            .map_err(|_| KernelError::Unsupported)?;
+            .map_err(|error| {
+                KernelError::detail(
+                    "cached_value_unavailable",
+                    format!(
+                        "Could not read cached value for {}: {error}",
+                        self.cell_label(cell)
+                    ),
+                )
+            })?;
         Ok(KernelValue::from_comparable_value(
             ComparableValue::from(value),
             self.scenario_count,
@@ -1949,6 +2635,13 @@ enum RoundMode {
 }
 
 #[derive(Clone, Copy)]
+enum DatePart {
+    Year,
+    Month,
+    Day,
+}
+
+#[derive(Clone, Copy)]
 enum CriteriaOperator {
     Equal,
     NotEqual,
@@ -1992,7 +2685,20 @@ impl KernelValue {
             KernelValue::Range(range) if range.cells.len() == 1 => context
                 .eval_cell(range.cells[0])?
                 .into_comparable_values(context),
-            KernelValue::Range(_) => Err(KernelError::Unsupported),
+            KernelValue::Range(range) => {
+                let Some(active_cell) = context.active_cell else {
+                    return Err(KernelError::detail(
+                        "implicit_intersection_context",
+                        format!(
+                            "Cannot apply implicit intersection to a {}x{} range without an active formula cell.",
+                            range.rows, range.columns
+                        ),
+                    ));
+                };
+                context
+                    .eval_implicit_intersection(range, active_cell)?
+                    .into_comparable_values(context)
+            }
         }
     }
 }
@@ -2026,6 +2732,7 @@ fn coerce_numbers(
     context: &mut KernelContext<'_, '_>,
     value: KernelValue,
 ) -> Result<Vec<f64>, KernelError> {
+    let active_cell_label = context.active_cell.map(|cell| context.cell_label(cell));
     value
         .into_comparable_values(context)?
         .into_iter()
@@ -2033,9 +2740,33 @@ fn coerce_numbers(
             ComparableValue::None => Ok(0.0),
             ComparableValue::Number(value) => Ok(value),
             ComparableValue::Boolean(value) => Ok(if value { 1.0 } else { 0.0 }),
-            ComparableValue::String(value) => {
-                value.parse::<f64>().map_err(|_| KernelError::Unsupported)
+            ComparableValue::String(value) => value.parse::<f64>().map_err(|_| {
+                KernelError::detail(
+                    "numeric_coercion",
+                    format!(
+                        "Could not coerce text value {value:?} to a number while evaluating {}.",
+                        active_cell_label.as_deref().unwrap_or("<unknown cell>")
+                    ),
+                )
+            }),
+        })
+        .collect()
+}
+
+fn sumproduct_numbers(values: Vec<ComparableValue>) -> Result<Vec<f64>, KernelError> {
+    values
+        .into_iter()
+        .map(|value| match value {
+            ComparableValue::None => Ok(0.0),
+            ComparableValue::Number(value) => Ok(value),
+            ComparableValue::Boolean(value) => Ok(if value { 1.0 } else { 0.0 }),
+            ComparableValue::String(value) if text_is_excel_error(&value) => {
+                Err(KernelError::detail(
+                    "formula_error_literal",
+                    format!("SUMPRODUCT encountered Excel error value {value}."),
+                ))
             }
+            ComparableValue::String(_) => Ok(0.0),
         })
         .collect()
 }
@@ -2108,6 +2839,10 @@ fn constant_i32(values: Vec<f64>) -> Result<i32, KernelError> {
     }
 }
 
+fn node_is_empty_arg(node: &Node) -> bool {
+    matches!(node, Node::EmptyArgKind)
+}
+
 fn comparable_to_text(value: &ComparableValue) -> String {
     match value {
         ComparableValue::None => String::new(),
@@ -2152,6 +2887,30 @@ fn comparable_delta(left: &ComparableValue, right: &ComparableValue) -> f64 {
     }
 }
 
+fn kernel_value_contains_error_text(value: &KernelValue) -> bool {
+    match value {
+        KernelValue::Values(values) => values.iter().any(comparable_value_is_error_text),
+        KernelValue::Range(_) => false,
+    }
+}
+
+fn comparable_value_is_error_text(value: &ComparableValue) -> bool {
+    matches!(value, ComparableValue::String(text) if text_is_excel_error(text))
+}
+
+fn text_is_excel_error(text: &str) -> bool {
+    text.starts_with('#')
+        && (text.ends_with('!') || text.ends_with('?') || text.eq_ignore_ascii_case("#N/A"))
+}
+
+fn kernel_error_is_excel_error_like(error: &KernelError) -> bool {
+    matches!(
+        error,
+        KernelError::Detail { code, .. }
+            if matches!(*code, "formula_error_literal" | "numeric_coercion")
+    )
+}
+
 fn solve_irr(cash_flows: &[f64], guess: f64) -> Option<f64> {
     if cash_flows.is_empty()
         || !cash_flows.iter().any(|value| *value > 0.0)
@@ -2163,7 +2922,7 @@ fn solve_irr(cash_flows: &[f64], guess: f64) -> Option<f64> {
     let mut rate = guess.max(-0.999_999);
     for _ in 0..100 {
         let (value, derivative) = irr_value_and_derivative(cash_flows, rate)?;
-        if value.abs() <= 1e-10 {
+        if value.abs() <= ROOT_SOLVER_TOLERANCE {
             return Some(rate);
         }
         if derivative == 0.0 {
@@ -2173,7 +2932,7 @@ fn solve_irr(cash_flows: &[f64], guess: f64) -> Option<f64> {
         if !next.is_finite() || next <= -0.999_999 {
             break;
         }
-        if (next - rate).abs() <= 1e-10 {
+        if (next - rate).abs() <= ROOT_SOLVER_TOLERANCE {
             return Some(next);
         }
         rate = next;
@@ -2234,7 +2993,7 @@ fn bisect_irr(cash_flows: &[f64], mut low: f64, mut high: f64) -> Option<f64> {
     for _ in 0..100 {
         let mid = (low + high) / 2.0;
         let mid_value = irr_value(cash_flows, mid)?;
-        if mid_value.abs() <= 1e-10 || (high - low).abs() <= 1e-10 {
+        if mid_value.abs() <= ROOT_SOLVER_TOLERANCE || (high - low).abs() <= ROOT_SOLVER_TOLERANCE {
             return Some(mid);
         }
         if low_value.signum() == mid_value.signum() {
@@ -2245,6 +3004,218 @@ fn bisect_irr(cash_flows: &[f64], mut low: f64, mut high: f64) -> Option<f64> {
         }
     }
     Some((low + high) / 2.0)
+}
+
+fn solve_xirr(cash_flows: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
+    if cash_flows.len() != dates.len()
+        || cash_flows.len() < 2
+        || !cash_flows.iter().all(|value| value.is_finite())
+        || !dates.iter().all(|value| value.is_finite())
+        || !cash_flows.iter().any(|value| *value > 0.0)
+        || !cash_flows.iter().any(|value| *value < 0.0)
+    {
+        return None;
+    }
+
+    let start_date = dates[0].trunc();
+    if dates.iter().any(|date| date.trunc() < start_date) {
+        return None;
+    }
+    let years = dates
+        .iter()
+        .map(|date| (date.trunc() - start_date) / 365.0)
+        .collect::<Vec<_>>();
+    if years.iter().all(|year| *year == 0.0) {
+        return None;
+    }
+
+    let mut rate = if guess.is_finite() { guess } else { 0.1 }.max(-0.999_999_999);
+    for _ in 0..100 {
+        let (value, derivative) = xirr_value_and_derivative(cash_flows, &years, rate)?;
+        if value.abs() <= ROOT_SOLVER_TOLERANCE {
+            return Some(rate);
+        }
+        if derivative == 0.0 {
+            break;
+        }
+        let next = rate - value / derivative;
+        if !next.is_finite() || next <= -0.999_999_999 {
+            break;
+        }
+        if (next - rate).abs() <= ROOT_SOLVER_TOLERANCE {
+            return Some(next);
+        }
+        rate = next;
+    }
+
+    solve_xirr_bisection(cash_flows, &years)
+}
+
+fn xirr_value_and_derivative(cash_flows: &[f64], years: &[f64], rate: f64) -> Option<(f64, f64)> {
+    if rate <= -1.0 {
+        return None;
+    }
+    let base = 1.0 + rate;
+    let mut value = 0.0;
+    let mut derivative = 0.0;
+    for (cash_flow, year_fraction) in cash_flows.iter().zip(years.iter()) {
+        value += cash_flow / base.powf(*year_fraction);
+        if *year_fraction != 0.0 {
+            derivative -= year_fraction * cash_flow / base.powf(*year_fraction + 1.0);
+        }
+    }
+    if value.is_finite() && derivative.is_finite() {
+        Some((value, derivative))
+    } else {
+        None
+    }
+}
+
+fn solve_xirr_bisection(cash_flows: &[f64], years: &[f64]) -> Option<f64> {
+    let candidates = [
+        -0.999_999_999,
+        -0.99,
+        -0.9,
+        -0.75,
+        -0.5,
+        -0.25,
+        -0.1,
+        0.0,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.0,
+        5.0,
+        10.0,
+        20.0,
+        50.0,
+        100.0,
+    ];
+    let mut previous_rate = candidates[0];
+    let mut previous_value = xirr_value(cash_flows, years, previous_rate)?;
+    for rate in candidates.iter().copied().skip(1) {
+        let value = xirr_value(cash_flows, years, rate)?;
+        if previous_value == 0.0 {
+            return Some(previous_rate);
+        }
+        if value == 0.0 {
+            return Some(rate);
+        }
+        if previous_value.signum() != value.signum() {
+            return bisect_xirr(cash_flows, years, previous_rate, rate);
+        }
+        previous_rate = rate;
+        previous_value = value;
+    }
+    None
+}
+
+fn xirr_value(cash_flows: &[f64], years: &[f64], rate: f64) -> Option<f64> {
+    xirr_value_and_derivative(cash_flows, years, rate).map(|(value, _)| value)
+}
+
+fn bisect_xirr(cash_flows: &[f64], years: &[f64], mut low: f64, mut high: f64) -> Option<f64> {
+    let mut low_value = xirr_value(cash_flows, years, low)?;
+    for _ in 0..100 {
+        let mid = (low + high) / 2.0;
+        let mid_value = xirr_value(cash_flows, years, mid)?;
+        if mid_value.abs() <= ROOT_SOLVER_TOLERANCE || (high - low).abs() <= ROOT_SOLVER_TOLERANCE {
+            return Some(mid);
+        }
+        if low_value.signum() == mid_value.signum() {
+            low = mid;
+            low_value = mid_value;
+        } else {
+            high = mid;
+        }
+    }
+    Some((low + high) / 2.0)
+}
+
+fn finite_truncated_i32(value: f64) -> Option<i32> {
+    if !value.is_finite() || value < i32::MIN as f64 || value > i32::MAX as f64 {
+        return None;
+    }
+    Some(value.trunc() as i32)
+}
+
+fn excel_date_serial(year: i32, month: i32, day: i32) -> Option<f64> {
+    let mut normalized_year = if (0..=1899).contains(&year) {
+        year.checked_add(1900)?
+    } else {
+        year
+    };
+    let month_index = month.checked_sub(1)?;
+    normalized_year = normalized_year.checked_add(month_index.div_euclid(12))?;
+    let normalized_month = month_index.rem_euclid(12) + 1;
+    if !(1..=9999).contains(&normalized_year) {
+        return None;
+    }
+
+    let start_days = days_from_civil(normalized_year, normalized_month, 1);
+    let date_days = start_days.checked_add((day as i64).checked_sub(1)?)?;
+    let min_days = days_from_civil(1900, 1, 1);
+    let max_days = days_from_civil(9999, 12, 31);
+    if date_days < min_days || date_days > max_days {
+        return None;
+    }
+
+    let base_days = days_from_civil(1899, 12, 31);
+    let mut serial = (date_days - base_days) as f64;
+    if date_days >= days_from_civil(1900, 3, 1) {
+        serial += 1.0;
+    }
+    Some(serial)
+}
+
+fn excel_serial_to_date(serial: f64) -> Option<(i32, i32, i32)> {
+    if !serial.is_finite() || serial < 1.0 {
+        return None;
+    }
+    let serial = serial.trunc() as i64;
+    if serial == 60 {
+        return Some((1900, 2, 29));
+    }
+
+    let base_days = days_from_civil(1899, 12, 31);
+    let date_days = if serial < 60 {
+        base_days.checked_add(serial)?
+    } else {
+        base_days.checked_add(serial.checked_sub(1)?)?
+    };
+    let (year, month, day) = civil_from_days(date_days);
+    if !(1900..=9999).contains(&year) {
+        return None;
+    }
+    Some((year, month, day))
+}
+
+fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
+    let adjusted_year = year - i32::from(month <= 2);
+    let era = adjusted_year.div_euclid(400);
+    let year_of_era = adjusted_year - era * 400;
+    let month_for_year = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_for_year + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    i64::from(era * 146_097 + day_of_era - 719_468)
+}
+
+fn civil_from_days(days: i64) -> (i32, i32, i32) {
+    let days = days + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_parameter = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_parameter + 2) / 5 + 1;
+    let month = month_parameter + if month_parameter < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    (year as i32, month as i32, day as i32)
 }
 
 fn approximate_match_position(
@@ -2521,6 +3492,34 @@ fn cells_for_rect(
     }
 }
 
+fn kernel_range_from_reference(
+    model: &Model<'_>,
+    reference: &str,
+    default_sheet: &str,
+) -> Option<KernelRange> {
+    let cleaned = reference.trim();
+    let mut parts = cleaned.split(':');
+    let left = parts.next()?;
+    let right = parts.next().unwrap_or(left);
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let (left_sheet, start_row, start_column) = parse_a1_cell(left, default_sheet)?;
+    let (right_sheet, end_row, end_column) = parse_a1_cell(right, &left_sheet)?;
+    if !left_sheet.eq_ignore_ascii_case(&right_sheet) {
+        return None;
+    }
+    let sheet = sheet_index_by_name(model, &left_sheet)?;
+    Some(cells_for_rect(
+        sheet,
+        start_row,
+        start_column,
+        end_row,
+        end_column,
+    ))
+}
+
 fn absolute_coord(value: i32, context: i32, is_absolute: bool) -> i32 {
     if is_absolute {
         value
@@ -2641,6 +3640,15 @@ fn values_match(actual: &ComparableValue, expected: &ComparableValue) -> bool {
             (left - right).abs() <= NUMERIC_TOLERANCE * right.abs().max(1.0)
         }
         _ => false,
+    }
+}
+
+fn format_comparable_value(value: &ComparableValue) -> String {
+    match value {
+        ComparableValue::None => "<blank>".to_string(),
+        ComparableValue::Number(value) => format!("{value:.12}"),
+        ComparableValue::String(value) => format!("{value:?}"),
+        ComparableValue::Boolean(value) => value.to_string(),
     }
 }
 
@@ -3075,6 +4083,276 @@ mod tests {
     }
 
     #[test]
+    fn validates_sumproduct_range_args_scalar_broadcast_and_text_zero() {
+        let mut model = Model::new_empty("sumproduct", "en", "UTC", "en").unwrap();
+        set(&mut model, 1, 1, "0");
+        set(&mut model, 1, 6, "1");
+        set(&mut model, 1, 7, "2");
+        set(&mut model, 1, 8, "3");
+        set(&mut model, 2, 6, "10");
+        set(&mut model, 2, 7, "20");
+        set(&mut model, 2, 8, "30");
+        set(&mut model, 3, 6, "4");
+        set(&mut model, 3, 7, "5");
+        set(&mut model, 3, 8, "label");
+        set(
+            &mut model,
+            3,
+            2,
+            "=sumproduct($F$1:$H$1,$F$2:$H$2)+SUMPRODUCT($F$3:$H$3,2)+A1",
+        );
+        set(&mut model, 2, 3, "5");
+        set(&mut model, 2, 4, "6");
+        set(&mut model, 3, 3, "163");
+        set(&mut model, 3, 4, "164");
+
+        let table = build_data_table_region(
+            "Sheet1",
+            "xl/worksheets/sheet1.xml",
+            "C3",
+            "C3:D3",
+            Some("A1"),
+            None,
+            false,
+            true,
+        );
+        let summary = evaluate_data_tables(&model, &[table], &[], true);
+
+        assert_eq!(summary.status, DataTableEvaluationStatus::Validated);
+        assert_eq!(summary.validated_data_table_cells, 2);
+        assert_eq!(summary.unsupported_data_table_cells, 0);
+        assert_eq!(summary.mismatched_data_table_cells, 0);
+    }
+
+    #[test]
+    fn validates_offset_with_omitted_height_and_width() {
+        let mut model = Model::new_empty("offset", "en", "UTC", "en").unwrap();
+        set(&mut model, 1, 1, "0");
+        set(&mut model, 1, 6, "10");
+        set(&mut model, 1, 7, "20");
+        set(&mut model, 2, 6, "5");
+        set(&mut model, 2, 7, "7");
+        set(
+            &mut model,
+            3,
+            2,
+            "=SUM(OFFSET($F$1,,,,2))+NPV(0,OFFSET($F$2,,,,2))+A1",
+        );
+        set(&mut model, 2, 3, "1");
+        set(&mut model, 2, 4, "2");
+        set(&mut model, 3, 3, "43");
+        set(&mut model, 3, 4, "44");
+
+        let table = build_data_table_region(
+            "Sheet1",
+            "xl/worksheets/sheet1.xml",
+            "C3",
+            "C3:D3",
+            Some("A1"),
+            None,
+            false,
+            true,
+        );
+        let summary = evaluate_data_tables(&model, &[table], &[], true);
+
+        assert_eq!(summary.status, DataTableEvaluationStatus::Validated);
+        assert_eq!(summary.validated_data_table_cells, 2);
+        assert_eq!(summary.unsupported_data_table_cells, 0);
+        assert_eq!(summary.mismatched_data_table_cells, 0);
+    }
+
+    #[test]
+    fn validates_date_and_xirr_functions() {
+        assert_eq!(excel_date_serial(2023, 1, 1), Some(44_927.0));
+        assert_eq!(excel_date_serial(2024, 1, 1), Some(45_292.0));
+        assert_eq!(excel_date_serial(2024, 13, 0), Some(45_657.0));
+        assert_eq!(excel_serial_to_date(44_927.0), Some((2023, 1, 1)));
+        assert_eq!(excel_serial_to_date(45_657.0), Some((2024, 12, 31)));
+        assert_eq!(excel_serial_to_date(60.0), Some((1900, 2, 29)));
+
+        let mut model = Model::new_empty("xirr", "en", "UTC", "en").unwrap();
+        set(&mut model, 1, 1, "110");
+        set(&mut model, 1, 2, "-100");
+        set(&mut model, 1, 3, "=A1");
+        set(&mut model, 2, 2, "=DATE(2023,1,1)");
+        set(&mut model, 2, 3, "=DATE(2024,1,1)");
+        set(
+            &mut model,
+            4,
+            2,
+            "=XIRR($B$1:$C$1,$B$2:$C$2)+YEAR($B$2)-2023+MONTH($B$2)-1+DAY($B$2)-1",
+        );
+        set(&mut model, 3, 3, "110");
+        set(&mut model, 3, 4, "120");
+        set(&mut model, 4, 3, "0.1");
+        set(&mut model, 4, 4, "0.2");
+        model.evaluate();
+
+        let table = build_data_table_region(
+            "Sheet1",
+            "xl/worksheets/sheet1.xml",
+            "C4",
+            "C4:D4",
+            Some("A1"),
+            None,
+            false,
+            true,
+        );
+        let summary = evaluate_data_tables(&model, &[table], &[], true);
+
+        assert_eq!(summary.status, DataTableEvaluationStatus::Validated);
+        assert_eq!(summary.evaluated_data_table_cells, 2);
+        assert_eq!(summary.validated_data_table_cells, 2);
+        assert_eq!(summary.mismatched_data_table_cells, 0);
+        assert_eq!(summary.unsupported_data_table_cells, 0);
+    }
+
+    #[test]
+    fn validates_simple_defined_name_references() {
+        let mut model = Model::new_empty("defined-name", "en", "UTC", "en").unwrap();
+        model.workbook.defined_names.push(DefinedName {
+            name: "circ".to_string(),
+            formula: "Sheet1!$A$1".to_string(),
+            sheet_id: None,
+        });
+        set(&mut model, 1, 1, "2");
+        set(&mut model, 2, 1, "0");
+        set(&mut model, 3, 2, "=circ*A2");
+        set(&mut model, 2, 3, "10");
+        set(&mut model, 2, 4, "20");
+        set(&mut model, 3, 3, "20");
+        set(&mut model, 3, 4, "40");
+
+        let table = build_data_table_region(
+            "Sheet1",
+            "xl/worksheets/sheet1.xml",
+            "C3",
+            "C3:D3",
+            Some("A2"),
+            None,
+            false,
+            true,
+        );
+        let summary = evaluate_data_tables(&model, &[table], &[], true);
+
+        assert_eq!(summary.status, DataTableEvaluationStatus::Validated);
+        assert_eq!(summary.validated_data_table_cells, 2);
+        assert_eq!(summary.unsupported_data_table_cells, 0);
+    }
+
+    #[test]
+    fn validates_cross_sheet_named_range_implicit_intersection() {
+        let mut model = Model::new_empty("cross-sheet-defined-name", "en", "UTC", "en").unwrap();
+        model.add_sheet("Cover").unwrap();
+        model.workbook.defined_names.push(DefinedName {
+            name: "LIBOR".to_string(),
+            formula: "Cover!$L$14:$U$14".to_string(),
+            sheet_id: None,
+        });
+        set(&mut model, 1, 1, "0");
+        set(&mut model, 3, 12, "=LIBOR+A1");
+        model.set_user_input(1, 14, 12, "0.04".to_string()).unwrap();
+        set(&mut model, 2, 13, "1");
+        set(&mut model, 2, 14, "2");
+        set(&mut model, 3, 13, "1.04");
+        set(&mut model, 3, 14, "2.04");
+
+        let table = build_data_table_region(
+            "Sheet1",
+            "xl/worksheets/sheet1.xml",
+            "M3",
+            "M3:N3",
+            Some("A1"),
+            None,
+            false,
+            true,
+        );
+        let summary = evaluate_data_tables(&model, &[table], &[], true);
+
+        assert_eq!(summary.status, DataTableEvaluationStatus::Validated);
+        assert_eq!(summary.validated_data_table_cells, 2);
+        assert_eq!(summary.unsupported_data_table_cells, 0);
+    }
+
+    #[test]
+    fn validates_iferror_for_excel_value_errors() {
+        assert!(comparable_value_is_error_text(&ComparableValue::String(
+            "#NAME?".to_string()
+        )));
+        assert!(comparable_value_is_error_text(&ComparableValue::String(
+            "#N/A".to_string()
+        )));
+
+        let mut model = Model::new_empty("iferror", "en", "UTC", "en").unwrap();
+        set(&mut model, 1, 1, "0");
+        set(&mut model, 3, 2, "=IFERROR(\"not numeric\"+1,99)+A1");
+        set(&mut model, 2, 3, "1");
+        set(&mut model, 2, 4, "2");
+        set(&mut model, 3, 3, "100");
+        set(&mut model, 3, 4, "101");
+        set(&mut model, 6, 2, "=IF(ISERROR(\"not numeric\"+1),99,0)+A1");
+        set(&mut model, 5, 3, "1");
+        set(&mut model, 5, 4, "2");
+        set(&mut model, 6, 3, "100");
+        set(&mut model, 6, 4, "101");
+
+        let iferror_table = build_data_table_region(
+            "Sheet1",
+            "xl/worksheets/sheet1.xml",
+            "C3",
+            "C3:D3",
+            Some("A1"),
+            None,
+            false,
+            true,
+        );
+        let iserror_table = build_data_table_region(
+            "Sheet1",
+            "xl/worksheets/sheet1.xml",
+            "C6",
+            "C6:D6",
+            Some("A1"),
+            None,
+            false,
+            true,
+        );
+        let summary = evaluate_data_tables(&model, &[iferror_table, iserror_table], &[], true);
+
+        assert_eq!(summary.status, DataTableEvaluationStatus::Validated);
+        assert_eq!(summary.validated_data_table_cells, 4);
+        assert_eq!(summary.unsupported_data_table_cells, 0);
+    }
+
+    #[test]
+    fn reuses_cached_formula_leaves_outside_table_inputs() {
+        let mut model = Model::new_empty("cached-leaf", "en", "UTC", "en").unwrap();
+        set(&mut model, 1, 1, "0");
+        set(&mut model, 1, 2, "=MROUND(7,1)");
+        set(&mut model, 3, 2, "=A1+B1");
+        set(&mut model, 2, 3, "10");
+        set(&mut model, 2, 4, "20");
+        set(&mut model, 3, 3, "17");
+        set(&mut model, 3, 4, "27");
+        model.evaluate();
+
+        let table = build_data_table_region(
+            "Sheet1",
+            "xl/worksheets/sheet1.xml",
+            "C3",
+            "C3:D3",
+            Some("A1"),
+            None,
+            false,
+            true,
+        );
+        let summary = evaluate_data_tables(&model, &[table], &[], true);
+
+        assert_eq!(summary.status, DataTableEvaluationStatus::Validated);
+        assert_eq!(summary.validated_data_table_cells, 2);
+        assert_eq!(summary.unsupported_data_table_cells, 0);
+    }
+
+    #[test]
     fn keeps_unsupported_formula_cones_as_fallbacks() {
         let mut model = Model::new_empty("table", "en", "UTC", "en").unwrap();
         model.set_user_input(0, 1, 1, "1".to_string()).unwrap();
@@ -3107,6 +4385,19 @@ mod tests {
         assert_eq!(summary.status, DataTableEvaluationStatus::Unsupported);
         assert_eq!(summary.evaluated_data_table_cells, 0);
         assert_eq!(summary.unsupported_data_table_cells, 4);
+        assert_eq!(summary.diagnostics.len(), 1);
+        assert_eq!(summary.diagnostics[0].code, "unsupported_function");
+        assert_eq!(summary.diagnostics[0].table_id, "Sheet1!C3:D4");
+        assert_eq!(
+            summary.diagnostics[0].formula_cell.as_deref(),
+            Some("Sheet1!B2")
+        );
+        assert_eq!(summary.diagnostics[0].affected_cells, 4);
+        assert!(summary.diagnostics[0]
+            .formula
+            .as_deref()
+            .unwrap_or_default()
+            .contains("INDIRECT"));
     }
 
     fn set(model: &mut Model, row: i32, column: i32, input: &str) {

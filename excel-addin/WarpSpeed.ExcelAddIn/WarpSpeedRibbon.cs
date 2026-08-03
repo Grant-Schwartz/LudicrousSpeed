@@ -15,11 +15,13 @@ namespace WarpSpeed.ExcelAddIn
         private readonly NativeEngineClient engineClient = new NativeEngineClient();
         private readonly WorkbookChangeTracker changeTracker = new WorkbookChangeTracker();
         private readonly WorkbookSnapshotService snapshotService;
+        private readonly LiveFormulaResultWriter resultWriter;
         private readonly ReportSheetWriter reportWriter = new ReportSheetWriter();
 
         public WarpSpeedRibbon()
         {
             snapshotService = new WorkbookSnapshotService(changeTracker);
+            resultWriter = new LiveFormulaResultWriter(changeTracker);
         }
 
         public void AutoOpen()
@@ -92,7 +94,7 @@ namespace WarpSpeed.ExcelAddIn
         public void RestoreLastResults(IRibbonControl control)
         {
             MessageBox.Show(
-                "Restore is wired into the ribbon, but value writeback is disabled in this prototype so there is nothing to restore yet.",
+                resultWriter.RestoreLastResults(),
                 "WarpSpeed",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -108,6 +110,9 @@ namespace WarpSpeed.ExcelAddIn
                 snapshot = snapshotService.Create(mode, excelBaselineMs);
                 var response = engineClient.Run(snapshot, out var nativeCallMs);
                 warpspeedStopwatch.Stop();
+                var writebackResult = resultWriter.Apply(
+                    response,
+                    string.Equals(mode, "recalculate", StringComparison.OrdinalIgnoreCase));
 
                 var hostMetrics = new HostRunMetrics
                 {
@@ -116,6 +121,10 @@ namespace WarpSpeed.ExcelAddIn
                     SnapshotSkipped = snapshot.SnapshotSkipped,
                     NativeCallMs = nativeCallMs,
                     WarpSpeedEndToEndMs = warpspeedStopwatch.ElapsedMilliseconds,
+                    WritebackMs = writebackResult.WritebackMs,
+                    WritebackStatus = writebackResult.Status,
+                    CalculationModeBeforeWriteback = writebackResult.CalculationBefore?.ToString(),
+                    CalculationModeAfterWriteback = writebackResult.CalculationAfter?.ToString(),
                 };
 
                 reportWriter.Write(response, hostMetrics);
@@ -128,8 +137,14 @@ namespace WarpSpeed.ExcelAddIn
 
                 changeTracker.MarkRunSucceeded(snapshot);
 
+                var completionMessage = "WarpSpeed completed. See the _WarpSpeed_Report sheet for coverage, fallback, timing, and writeback details.";
+                if (string.Equals(writebackResult.Status, "blocked", StringComparison.OrdinalIgnoreCase))
+                {
+                    completionMessage += Environment.NewLine + Environment.NewLine + "Live formula writeback was blocked: " + writebackResult.Message;
+                }
+
                 MessageBox.Show(
-                    "WarpSpeed completed. See the _WarpSpeed_Report sheet for coverage, fallback, and timing details.",
+                    completionMessage,
                     "WarpSpeed",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);

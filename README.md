@@ -19,12 +19,16 @@ benchmark diagnostics.
    `Benchmark` in Excel.
 2. The add-in saves a temporary `.xlsx` copy of the active workbook.
 3. Rust loads the workbook with IronCalc and evaluates the model.
-4. The add-in displays coverage/timing diagnostics.
-5. Excel remains the fallback and correctness authority for unsupported behavior.
+4. For `Recalculate with WarpSpeed`, Rust returns formula-cache writeback
+   candidates only when the workbook has no fallback regions.
+5. The add-in probes whether Excel exposes a supported formula-preserving live
+   cache setter. If the probe fails, formulas and model cells are left untouched.
+6. The add-in displays coverage, timing, and writeback diagnostics.
+7. Excel remains the fallback and correctness authority for unsupported behavior.
 
-The first implementation intentionally does not overwrite formulas. It writes a
-diagnostic report and keeps the engine/writeback boundary explicit so safe cached
-value writeback can be added after validation on representative M&A models.
+The MVP intentionally refuses to fake formula-cache writeback with `Range.Value2`,
+because that replaces formula cells. It preserves formulas, reports candidate and
+blocked-writeback details, and leaves full live writeback behind a host probe.
 
 ## Build prerequisites
 

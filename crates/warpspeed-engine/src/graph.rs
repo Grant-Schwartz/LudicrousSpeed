@@ -245,6 +245,14 @@ impl DependencyGraph {
         }
     }
 
+    pub(crate) fn supported_formula_cells(&self) -> impl Iterator<Item = CellId> + '_ {
+        self.formula_cells
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(index, cell)| (!self.formula_has_fallback[index]).then_some(cell))
+    }
+
     pub(crate) fn dirty_summary(&self, changed_cells: &[CellId]) -> DirtySummary {
         if self.formula_cells.is_empty() || changed_cells.is_empty() {
             return DirtySummary {
@@ -390,6 +398,11 @@ fn collect_node_dependencies(node: &Node, context: CellId, dependencies: &mut Fo
                 }
                 _ => {}
             }
+            for arg in args {
+                collect_node_dependencies(arg, context, dependencies);
+            }
+        }
+        Node::InvalidFunctionKind { name, args } if name.eq_ignore_ascii_case("sumproduct") => {
             for arg in args {
                 collect_node_dependencies(arg, context, dependencies);
             }
@@ -597,6 +610,28 @@ mod tests {
                 dirty_formula_cells: 1,
                 planned_reusable_formula_cells: 0,
             }
+        );
+    }
+
+    #[test]
+    fn treats_sumproduct_as_supported_range_dependency() {
+        let mut model = Model::new_empty("sumproduct", "en", "UTC", "en").unwrap();
+        model.set_user_input(0, 1, 1, "10".to_string()).unwrap();
+        model.set_user_input(0, 1, 2, "20".to_string()).unwrap();
+        model.set_user_input(0, 2, 1, "2".to_string()).unwrap();
+        model.set_user_input(0, 2, 2, "3".to_string()).unwrap();
+        model
+            .set_user_input(0, 3, 1, "=SUMPRODUCT(A1:B1,A2:B2)".to_string())
+            .unwrap();
+
+        let graph = build_dependency_graph(&model);
+        assert_eq!(graph.coverage().formula_cells, 1);
+        assert_eq!(graph.coverage().fallback_formula_cells, 0);
+        assert_eq!(
+            graph
+                .dirty_summary(&[CellId::new(0, 1, 2)])
+                .dirty_formula_cells,
+            1
         );
     }
 

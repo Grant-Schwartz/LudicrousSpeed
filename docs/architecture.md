@@ -28,6 +28,12 @@ it, evaluates it, and returns JSON over a C ABI. This favors fast validation ove
 maximum performance. Once coverage and correctness are proven, direct in-memory
 translation can replace the file bridge behind the same `CalcEngine` boundary.
 
+For recalculation runs where the workbook has no fallback regions, Rust includes
+typed formula-result candidates in the JSON response. The Excel host only applies
+those candidates if a live formula-cache probe proves the available automation
+path can update displayed values without replacing formulas; otherwise the
+candidate cells remain report-only and the model workbook is left unchanged.
+
 The V1 benchmark path keeps a process-local Rust engine alive behind the C ABI.
 The Excel host tracks edited cells with `Application.SheetChange`; after a
 successful cold snapshot run, warm runs can send only changed cell inputs and

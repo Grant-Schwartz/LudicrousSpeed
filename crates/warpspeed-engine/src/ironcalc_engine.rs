@@ -3,17 +3,19 @@ use std::fs;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use ironcalc::base::Model;
+use ironcalc::base::{cell::CellValue, expressions::utils::number_to_column, Model};
 use ironcalc::import::load_from_xlsx;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::data_tables::{evaluate_data_tables, summarize_data_tables, DataTableRegion};
 use crate::engine::CalcEngine;
 use crate::graph::{build_dependency_graph, CellId, DependencyGraph, DirtySummary};
 use crate::model::{
-    AnalysisSummary, BenchmarkSummary, CalcPlan, CalcResult, CalculationStrategy, ChangedCell,
-    DataTableBenchmarkSummary, DataTableEvaluationStatus, EngineError, ExcelWritebackPlan,
-    FallbackReason, FormulaCoverage, WorkbookSnapshot,
+    AnalysisSummary, BenchmarkSummary, CalcMode, CalcPlan, CalcResult, CalculationStrategy,
+    ChangedCell, DataTableBenchmarkSummary, DataTableEvaluationStatus, EngineError,
+    ExcelWritebackPlan, FallbackReason, FormulaCoverage, FormulaValueKind, FormulaWritebackCell,
+    WorkbookSnapshot, WritebackIssueSummary, WritebackMode,
 };
 use crate::xlsx_sanitize::{
     remove_sanitized_workbook, sanitize_data_table_formulas, ImportFallbacks,
@@ -80,6 +82,13 @@ impl CalcEngine for IronCalcEngine {
                         result.plan.workbook_hash = entry.workbook_hash.clone();
                         result.plan.fallback_reasons =
                             merged_fallback_reasons(&entry.graph, &entry.import_fallbacks);
+                        result.writeback = build_writeback_plan(
+                            snapshot,
+                            &entry.model,
+                            &entry.graph,
+                            &entry.import_fallbacks,
+                            &entry.data_tables,
+                        );
                         result.benchmark = benchmark_summary(
                             snapshot,
                             started,
@@ -141,6 +150,8 @@ impl CalcEngine for IronCalcEngine {
                         &entry.workbook_hash,
                         &entry.graph,
                         &entry.import_fallbacks,
+                        &entry.data_tables,
+                        &entry.model,
                         started,
                         TimingBreakdown {
                             cache_lookup_ms,
@@ -175,6 +186,8 @@ impl CalcEngine for IronCalcEngine {
             &entry.workbook_hash,
             &entry.graph,
             &entry.import_fallbacks,
+            &entry.data_tables,
+            &entry.model,
             started,
             TimingBreakdown {
                 cache_lookup_ms,
@@ -331,6 +344,8 @@ fn run_forced_reload(
         &entry.workbook_hash,
         &entry.graph,
         &entry.import_fallbacks,
+        &entry.data_tables,
+        &entry.model,
         started,
         TimingBreakdown {
             cache_lookup_ms,
@@ -457,6 +472,8 @@ fn build_result(
     workbook_hash: &str,
     graph: &DependencyGraph,
     import_fallbacks: &ImportFallbacks,
+    data_tables: &[DataTableRegion],
+    model: &Model<'_>,
     started: Instant,
     timing: TimingBreakdown,
 ) -> CalcResult {
@@ -474,15 +491,283 @@ fn build_result(
             fallback_reasons,
         },
         benchmark: benchmark_summary(snapshot, started, timing),
-        writeback: ExcelWritebackPlan {
-            preserve_formulas: true,
-            value_cells_to_update: 0,
-            notes: vec![
-                "Prototype mode: formulas are preserved and no cached values are overwritten yet.".to_string(),
-                "V1 cache mode reuses workbook state for benchmarking but only skips evaluation on safe no-change cache hits.".to_string(),
-            ],
-        },
+        writeback: build_writeback_plan(snapshot, model, graph, import_fallbacks, data_tables),
     }
+}
+
+fn build_writeback_plan(
+    snapshot: &WorkbookSnapshot,
+    model: &Model<'_>,
+    graph: &DependencyGraph,
+    import_fallbacks: &ImportFallbacks,
+    data_tables: &[DataTableRegion],
+) -> ExcelWritebackPlan {
+    let mut notes = vec![
+        "Formulas are preserved; the Excel host must pass a live formula-cache probe before applying returned values.".to_string(),
+        "Excel remains the correctness authority for unsupported formulas and restore/rebuild behavior.".to_string(),
+    ];
+
+    let fallback_reasons = merged_fallback_reasons(graph, import_fallbacks);
+    if !fallback_reasons.is_empty() {
+        let skipped = coverage_with_import_fallbacks(graph, import_fallbacks).formula_cells;
+        let skipped_reasons = vec![WritebackIssueSummary {
+            code: "fallback_regions_present".to_string(),
+            count: skipped,
+            message:
+                "Workbook has fallback regions, so Rust values are not written back for this MVP."
+                    .to_string(),
+        }];
+        notes.push(
+            "Live writeback is blocked because the workbook contains fallback regions.".to_string(),
+        );
+        return writeback_plan(
+            WritebackMode::None,
+            Vec::new(),
+            skipped,
+            skipped_reasons,
+            notes,
+        );
+    }
+
+    if snapshot.mode != CalcMode::Recalculate {
+        notes.push("Live writeback candidates are returned only for Recalculate runs.".to_string());
+        return writeback_plan(WritebackMode::None, Vec::new(), 0, Vec::new(), notes);
+    }
+
+    let mut skipped_reasons = Vec::new();
+    let cells = collect_formula_writeback_cells(model, graph, data_tables, &mut skipped_reasons);
+    let skipped = skipped_reasons.iter().map(|reason| reason.count).sum();
+    let mode = if cells.is_empty() {
+        notes.push(
+            "No supported scalar formula values were available for live writeback.".to_string(),
+        );
+        WritebackMode::None
+    } else {
+        notes.push(format!(
+            "Rust produced {} formula-cache candidate cells for the Excel host.",
+            cells.len()
+        ));
+        WritebackMode::LiveFormulaCache
+    };
+
+    writeback_plan(mode, cells, skipped, skipped_reasons, notes)
+}
+
+fn writeback_plan(
+    mode: WritebackMode,
+    cells: Vec<FormulaWritebackCell>,
+    skipped: usize,
+    skipped_reasons: Vec<WritebackIssueSummary>,
+    notes: Vec<String>,
+) -> ExcelWritebackPlan {
+    ExcelWritebackPlan {
+        preserve_formulas: true,
+        value_cells_to_update: cells.len(),
+        mode,
+        cells,
+        attempted: 0,
+        written: 0,
+        skipped,
+        failed: 0,
+        skipped_reasons,
+        failed_samples: Vec::new(),
+        notes,
+    }
+}
+
+fn collect_formula_writeback_cells(
+    model: &Model<'_>,
+    graph: &DependencyGraph,
+    data_tables: &[DataTableRegion],
+    skipped_reasons: &mut Vec<WritebackIssueSummary>,
+) -> Vec<FormulaWritebackCell> {
+    let mut cells = Vec::new();
+
+    for cell in graph.supported_formula_cells() {
+        if is_data_table_output_cell(model, data_tables, cell) {
+            add_writeback_issue(
+                skipped_reasons,
+                "data_table_output",
+                "Data table output cells are skipped by the scalar formula writeback MVP.",
+                1,
+            );
+            continue;
+        }
+
+        let Some(sheet_name) = sheet_name_for_cell(model, cell) else {
+            add_writeback_issue(
+                skipped_reasons,
+                "missing_sheet",
+                "Formula cell belongs to a sheet the host cannot address.",
+                1,
+            );
+            continue;
+        };
+
+        let formula = match model.get_cell_formula(cell.sheet, cell.row, cell.column) {
+            Ok(Some(formula)) => formula,
+            _ => {
+                add_writeback_issue(
+                    skipped_reasons,
+                    "missing_formula",
+                    "A candidate cell no longer had formula text available.",
+                    1,
+                );
+                continue;
+            }
+        };
+
+        if looks_like_multi_cell_formula(&formula) {
+            add_writeback_issue(
+                skipped_reasons,
+                "multi_cell_formula",
+                "Array, spill, and known dynamic-array formulas are skipped by the scalar writeback MVP.",
+                1,
+            );
+            continue;
+        }
+
+        let (value_kind, value) = match writeback_value_from_cell_value(
+            model.get_cell_value_by_index(cell.sheet, cell.row, cell.column),
+        ) {
+            Ok(value) => value,
+            Err((code, message)) => {
+                add_writeback_issue(skipped_reasons, code, message, 1);
+                continue;
+            }
+        };
+
+        let column = number_to_column(cell.column).unwrap_or_else(|| format!("C{}", cell.column));
+        let address = format!("{column}{}", cell.row);
+        cells.push(FormulaWritebackCell {
+            sheet_name,
+            row: cell.row,
+            column: cell.column,
+            address,
+            formula_hash: formula_hash(&formula),
+            value_kind,
+            value,
+        });
+    }
+
+    cells
+}
+
+fn is_data_table_output_cell(
+    model: &Model<'_>,
+    data_tables: &[DataTableRegion],
+    cell: CellId,
+) -> bool {
+    let Some(sheet_name) = sheet_name_for_cell(model, cell) else {
+        return false;
+    };
+
+    data_tables.iter().any(|table| {
+        table.sheet_name.eq_ignore_ascii_case(&sheet_name)
+            && table.range.contains(cell.row, cell.column)
+    })
+}
+
+fn sheet_name_for_cell(model: &Model<'_>, cell: CellId) -> Option<String> {
+    model
+        .workbook
+        .worksheets
+        .get(cell.sheet as usize)
+        .map(|worksheet| worksheet.name.clone())
+}
+
+fn writeback_value_from_cell_value(
+    value: Result<CellValue, String>,
+) -> Result<(FormulaValueKind, serde_json::Value), (&'static str, &'static str)> {
+    match value.map_err(|_| {
+        (
+            "value_read_error",
+            "IronCalc could not read the evaluated formula value.",
+        )
+    })? {
+        CellValue::None => Ok((FormulaValueKind::Blank, json!(null))),
+        CellValue::Number(value) if value.is_finite() => {
+            Ok((FormulaValueKind::Number, json!(value)))
+        }
+        CellValue::Number(_) => Err((
+            "non_finite_number",
+            "Formula evaluated to a non-finite numeric value.",
+        )),
+        CellValue::String(value) if is_excel_error_text(&value) => Err((
+            "formula_error",
+            "Formula evaluated to an Excel error value.",
+        )),
+        CellValue::String(value) => Ok((FormulaValueKind::String, json!(value))),
+        CellValue::Boolean(value) => Ok((FormulaValueKind::Boolean, json!(value))),
+    }
+}
+
+fn is_excel_error_text(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_uppercase().as_str(),
+        "#NULL!"
+            | "#DIV/0!"
+            | "#VALUE!"
+            | "#REF!"
+            | "#NAME?"
+            | "#NUM!"
+            | "#N/A"
+            | "#GETTING_DATA"
+            | "#ERROR!"
+    )
+}
+
+fn looks_like_multi_cell_formula(formula: &str) -> bool {
+    let normalized = normalize_formula(formula).to_ascii_uppercase();
+    normalized.starts_with('{')
+        || normalized.contains('#')
+        || [
+            "FILTER(",
+            "RANDARRAY(",
+            "SEQUENCE(",
+            "SORT(",
+            "SORTBY(",
+            "UNIQUE(",
+            "TRANSPOSE(",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+fn formula_hash(formula: &str) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(normalize_formula(formula).as_bytes())
+    )
+}
+
+fn normalize_formula(formula: &str) -> String {
+    formula
+        .trim()
+        .trim_start_matches('=')
+        .trim()
+        .replace("\r\n", "\n")
+}
+
+fn add_writeback_issue(
+    skipped_reasons: &mut Vec<WritebackIssueSummary>,
+    code: &str,
+    message: &str,
+    count: usize,
+) {
+    if let Some(reason) = skipped_reasons
+        .iter_mut()
+        .find(|reason| reason.code == code)
+    {
+        reason.count += count;
+        return;
+    }
+
+    skipped_reasons.push(WritebackIssueSummary {
+        code: code.to_string(),
+        count,
+        message: message.to_string(),
+    });
 }
 
 fn benchmark_summary(

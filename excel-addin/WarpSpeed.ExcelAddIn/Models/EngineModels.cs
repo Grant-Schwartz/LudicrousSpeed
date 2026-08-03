@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace WarpSpeed.ExcelAddIn.Models
 {
@@ -80,6 +81,14 @@ namespace WarpSpeed.ExcelAddIn.Models
         public long WarpSpeedEndToEndMs { get; set; }
 
         public bool SnapshotSkipped { get; set; }
+
+        public long WritebackMs { get; set; }
+
+        public string WritebackStatus { get; set; } = "not_attempted";
+
+        public string? CalculationModeBeforeWriteback { get; set; }
+
+        public string? CalculationModeAfterWriteback { get; set; }
 
         public double? EndToEndSpeedupVsExcel
         {
@@ -245,6 +254,36 @@ namespace WarpSpeed.ExcelAddIn.Models
 
         [JsonProperty("status")]
         public string Status { get; set; } = "";
+
+        [JsonProperty("diagnostics")]
+        public List<DataTableDiagnostic> Diagnostics { get; set; } = new List<DataTableDiagnostic>();
+    }
+
+    internal sealed class DataTableDiagnostic
+    {
+        [JsonProperty("code")]
+        public string Code { get; set; } = "";
+
+        [JsonProperty("message")]
+        public string Message { get; set; } = "";
+
+        [JsonProperty("table_id")]
+        public string TableId { get; set; } = "";
+
+        [JsonProperty("sheet_name")]
+        public string SheetName { get; set; } = "";
+
+        [JsonProperty("range_address")]
+        public string RangeAddress { get; set; } = "";
+
+        [JsonProperty("formula_cell")]
+        public string? FormulaCell { get; set; }
+
+        [JsonProperty("formula")]
+        public string? Formula { get; set; }
+
+        [JsonProperty("affected_cells")]
+        public int AffectedCells { get; set; }
     }
 
     internal sealed class ExcelWritebackPlan
@@ -255,7 +294,79 @@ namespace WarpSpeed.ExcelAddIn.Models
         [JsonProperty("value_cells_to_update")]
         public int ValueCellsToUpdate { get; set; }
 
+        [JsonProperty("mode")]
+        public string Mode { get; set; } = "none";
+
+        [JsonProperty("cells")]
+        public List<FormulaWritebackCell> Cells { get; set; } = new List<FormulaWritebackCell>();
+
+        [JsonProperty("attempted")]
+        public int Attempted { get; set; }
+
+        [JsonProperty("written")]
+        public int Written { get; set; }
+
+        [JsonProperty("skipped")]
+        public int Skipped { get; set; }
+
+        [JsonProperty("failed")]
+        public int Failed { get; set; }
+
+        [JsonProperty("skipped_reasons")]
+        public List<WritebackIssueSummary> SkippedReasons { get; set; } = new List<WritebackIssueSummary>();
+
+        [JsonProperty("failed_samples")]
+        public List<WritebackCellFailure> FailedSamples { get; set; } = new List<WritebackCellFailure>();
+
         [JsonProperty("notes")]
         public List<string> Notes { get; set; } = new List<string>();
+    }
+
+    internal sealed class FormulaWritebackCell
+    {
+        [JsonProperty("sheet_name")]
+        public string SheetName { get; set; } = "";
+
+        [JsonProperty("row")]
+        public int Row { get; set; }
+
+        [JsonProperty("column")]
+        public int Column { get; set; }
+
+        [JsonProperty("address")]
+        public string Address { get; set; } = "";
+
+        [JsonProperty("formula_hash")]
+        public string FormulaHash { get; set; } = "";
+
+        [JsonProperty("value_kind")]
+        public string ValueKind { get; set; } = "";
+
+        [JsonProperty("value")]
+        public JToken? Value { get; set; }
+    }
+
+    internal sealed class WritebackIssueSummary
+    {
+        [JsonProperty("code")]
+        public string Code { get; set; } = "";
+
+        [JsonProperty("count")]
+        public int Count { get; set; }
+
+        [JsonProperty("message")]
+        public string Message { get; set; } = "";
+    }
+
+    internal sealed class WritebackCellFailure
+    {
+        [JsonProperty("sheet_name")]
+        public string SheetName { get; set; } = "";
+
+        [JsonProperty("address")]
+        public string Address { get; set; } = "";
+
+        [JsonProperty("message")]
+        public string Message { get; set; } = "";
     }
 }

@@ -186,7 +186,62 @@ impl Default for DataTableEvaluationStatus {
 pub struct ExcelWritebackPlan {
     pub preserve_formulas: bool,
     pub value_cells_to_update: usize,
+    pub mode: WritebackMode,
+    pub cells: Vec<FormulaWritebackCell>,
+    pub attempted: usize,
+    pub written: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub skipped_reasons: Vec<WritebackIssueSummary>,
+    pub failed_samples: Vec<WritebackCellFailure>,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WritebackMode {
+    None,
+    LiveFormulaCache,
+}
+
+impl Default for WritebackMode {
+    fn default() -> Self {
+        WritebackMode::None
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FormulaValueKind {
+    Blank,
+    Number,
+    String,
+    Boolean,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormulaWritebackCell {
+    pub sheet_name: String,
+    pub row: i32,
+    pub column: i32,
+    pub address: String,
+    pub formula_hash: String,
+    pub value_kind: FormulaValueKind,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WritebackIssueSummary {
+    pub code: String,
+    pub count: usize,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WritebackCellFailure {
+    pub sheet_name: String,
+    pub address: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
