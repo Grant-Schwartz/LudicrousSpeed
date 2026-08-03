@@ -225,7 +225,7 @@ fn print_summary(workbook_path: &str, result: &CalcResult) {
         benchmark.dirty_formula_cells, benchmark.planned_reusable_formula_cells
     );
     println!(
-        "Data tables: status={}, tables={}, cells={}, dirty={}, reused={}, evaluated={}, validated={}, mismatched={}, unsupported={}, eval={} ms, workers={}",
+        "Data tables: status={}, tables={}, cells={}, dirty={}, reused={}, evaluated={}, validated={}, mismatched={} (stale_cache={}), unsupported={}, eval={} ms, workers={}",
         data_table_status_label(benchmark.data_tables.status),
         benchmark.data_tables.data_table_count,
         benchmark.data_tables.data_table_cells,
@@ -234,6 +234,7 @@ fn print_summary(workbook_path: &str, result: &CalcResult) {
         benchmark.data_tables.evaluated_data_table_cells,
         benchmark.data_tables.validated_data_table_cells,
         benchmark.data_tables.mismatched_data_table_cells,
+        benchmark.data_tables.stale_cache_data_table_cells,
         benchmark.data_tables.unsupported_data_table_cells,
         benchmark.data_tables.data_table_eval_ms,
         benchmark.data_tables.data_table_parallelism

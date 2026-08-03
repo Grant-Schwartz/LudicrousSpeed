@@ -156,6 +156,11 @@ pub struct DataTableBenchmarkSummary {
     pub evaluated_data_table_cells: usize,
     pub validated_data_table_cells: usize,
     pub mismatched_data_table_cells: usize,
+    /// Subset of `mismatched_data_table_cells` where Excel's own cached body
+    /// was constant across every scenario in the table, a strong signal that
+    /// the cache is stale (never recalculated for these inputs) rather than
+    /// that the kernel result is wrong.
+    pub stale_cache_data_table_cells: usize,
     pub unsupported_data_table_cells: usize,
     pub data_table_eval_ms: u128,
     pub data_table_parallelism: usize,

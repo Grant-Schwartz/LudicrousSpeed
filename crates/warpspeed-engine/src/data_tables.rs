@@ -119,6 +119,7 @@ struct ScenarioCounts {
     evaluated: usize,
     validated: usize,
     mismatched: usize,
+    stale_cache: usize,
     unsupported: usize,
     diagnostics: Vec<DataTableDiagnostic>,
 }
@@ -382,6 +383,7 @@ pub(crate) fn evaluate_data_tables(
     summary.evaluated_data_table_cells = counts.evaluated;
     summary.validated_data_table_cells = counts.validated;
     summary.mismatched_data_table_cells = counts.mismatched;
+    summary.stale_cache_data_table_cells = counts.stale_cache;
     summary.unsupported_data_table_cells += counts.unsupported;
     summary.diagnostics.extend(counts.diagnostics);
     summary.status = data_table_status(&summary);
@@ -755,23 +757,54 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
         }
     }
     if counts.mismatched > 0 {
-        let message = match first_mismatch {
-            Some(sample) => format!(
-                "Data table kernel result did not match Excel cached output for one or more cells. {sample}"
-            ),
-            None => {
-                "Data table kernel result did not match Excel cached output for one or more cells."
-                    .to_string()
-            }
-        };
-        counts.diagnostics.push(data_table_diagnostic(
-            model,
-            table,
-            counts.mismatched,
-            &KernelError::detail("data_table_mismatch", message),
-        ));
+        if expected_grid_looks_stale(&expected_values) {
+            counts.stale_cache = counts.mismatched;
+            let message = format!(
+                "Excel's cached data table body is identical across all {} scenarios, which is not \
+                 possible for a genuinely recalculated data table. This table's cache almost certainly \
+                 predates its current inputs (data tables are frequently left un-recalculated because \
+                 they are slow); WarpSpeed's result is not validated against it, but the mismatch is \
+                 more likely stale Excel data than a WarpSpeed error. {}",
+                expected_values.len(),
+                first_mismatch.as_deref().unwrap_or_default()
+            );
+            counts.diagnostics.push(data_table_diagnostic(
+                model,
+                table,
+                counts.mismatched,
+                &KernelError::detail("stale_cached_data_table", message),
+            ));
+        } else {
+            let message = match first_mismatch {
+                Some(sample) => format!(
+                    "Data table kernel result did not match Excel cached output for one or more cells. {sample}"
+                ),
+                None => {
+                    "Data table kernel result did not match Excel cached output for one or more cells."
+                        .to_string()
+                }
+            };
+            counts.diagnostics.push(data_table_diagnostic(
+                model,
+                table,
+                counts.mismatched,
+                &KernelError::detail("data_table_mismatch", message),
+            ));
+        }
     }
     counts
+}
+
+/// True when every scenario in `expected_values` (Excel's cached data-table
+/// body) is bit-identical. Real data tables vary their output across
+/// scenarios by construction; an entirely flat body is strong evidence the
+/// cache simply hasn't been recalculated for these inputs, not that the
+/// cells are legitimately insensitive to every axis at once.
+fn expected_grid_looks_stale(expected_values: &[ComparableValue]) -> bool {
+    expected_values.len() >= 4
+        && expected_values
+            .windows(2)
+            .all(|pair| pair[0] == pair[1])
 }
 
 fn unsupported_table_result(
@@ -3631,6 +3664,7 @@ impl ScenarioCounts {
         self.evaluated += other.evaluated;
         self.validated += other.validated;
         self.mismatched += other.mismatched;
+        self.stale_cache += other.stale_cache;
         self.unsupported += other.unsupported;
         self.diagnostics.extend(other.diagnostics);
     }

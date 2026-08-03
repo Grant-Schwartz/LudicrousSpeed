@@ -267,6 +267,9 @@ namespace WarpSpeed.ExcelAddIn.Models
         [JsonProperty("mismatched_data_table_cells")]
         public int MismatchedDataTableCells { get; set; }
 
+        [JsonProperty("stale_cache_data_table_cells")]
+        public int StaleCacheDataTableCells { get; set; }
+
         [JsonProperty("unsupported_data_table_cells")]
         public int UnsupportedDataTableCells { get; set; }
 
