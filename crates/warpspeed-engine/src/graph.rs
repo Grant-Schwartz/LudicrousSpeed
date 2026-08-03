@@ -65,8 +65,11 @@ pub(crate) struct DependencyGraph {
     sccs: Vec<Vec<usize>>,
     scc_by_node: Vec<usize>,
     formula_has_fallback: Vec<bool>,
+    formula_fallback_codes: Vec<HashSet<String>>,
     fallback_reasons: Vec<FallbackReason>,
     fallback_details: Vec<FallbackDetail>,
+    circular_sccs: HashSet<usize>,
+    has_cached_circular_allowances: bool,
     structure_hash: String,
 }
 
@@ -109,6 +112,7 @@ pub(crate) fn build_dependency_graph(model: &Model<'_>) -> DependencyGraph {
     let mut range_dependents_by_sheet: HashMap<u32, Vec<RangeDependency>> = HashMap::new();
     let mut adjacency = vec![Vec::new(); formula_entries.len()];
     let mut formula_has_fallback = vec![false; formula_entries.len()];
+    let mut formula_fallback_codes = vec![HashSet::new(); formula_entries.len()];
     let mut fallback_reasons = Vec::new();
     let mut fallback_details = Vec::new();
     let mut fallback_keys = HashSet::new();
@@ -120,6 +124,7 @@ pub(crate) fn build_dependency_graph(model: &Model<'_>) -> DependencyGraph {
             .and_then(|formulas| formulas.get(*formula_index as usize))
         else {
             formula_has_fallback[dependent_node] = true;
+            formula_fallback_codes[dependent_node].insert("missing_parsed_formula".to_string());
             let location = Some(format_cell_location(model, *cell));
             add_fallback(
                 &mut fallback_reasons,
@@ -141,6 +146,7 @@ pub(crate) fn build_dependency_graph(model: &Model<'_>) -> DependencyGraph {
         if !dependencies.fallbacks.is_empty() {
             formula_has_fallback[dependent_node] = true;
             for fallback in dependencies.fallbacks {
+                formula_fallback_codes[dependent_node].insert(fallback.code.to_string());
                 let location = Some(format_cell_location(model, *cell));
                 add_fallback(
                     &mut fallback_reasons,
@@ -195,11 +201,14 @@ pub(crate) fn build_dependency_graph(model: &Model<'_>) -> DependencyGraph {
         }
     }
 
+    let mut circular_sccs = HashSet::new();
     for (scc_index, scc) in sccs.iter().enumerate() {
         let is_cycle = scc.len() > 1 || scc.iter().any(|node| adjacency[*node].contains(node));
         if is_cycle {
+            circular_sccs.insert(scc_index);
             for node in scc {
                 formula_has_fallback[*node] = true;
+                formula_fallback_codes[*node].insert("circular_reference".to_string());
                 let cell = formula_entries[*node].0;
                 let location = Some(format_cell_location(model, cell));
                 add_fallback(
@@ -228,8 +237,11 @@ pub(crate) fn build_dependency_graph(model: &Model<'_>) -> DependencyGraph {
         sccs,
         scc_by_node,
         formula_has_fallback,
+        formula_fallback_codes,
         fallback_reasons,
         fallback_details,
+        circular_sccs,
+        has_cached_circular_allowances: false,
         structure_hash,
     }
 }
@@ -245,6 +257,10 @@ impl DependencyGraph {
 
     pub(crate) fn is_result_cache_safe(&self) -> bool {
         self.fallback_reasons.is_empty()
+    }
+
+    pub(crate) fn has_cached_circular_allowances(&self) -> bool {
+        self.has_cached_circular_allowances
     }
 
     pub(crate) fn fallback_reasons(&self) -> Vec<FallbackReason> {
@@ -274,6 +290,85 @@ impl DependencyGraph {
             .copied()
             .enumerate()
             .filter_map(|(index, cell)| (!self.formula_has_fallback[index]).then_some(cell))
+    }
+
+    pub(crate) fn circular_formula_cells(&self) -> impl Iterator<Item = CellId> + '_ {
+        self.circular_sccs
+            .iter()
+            .flat_map(|scc_index| self.sccs[*scc_index].iter())
+            .map(|node| self.formula_cells[*node])
+    }
+
+    pub(crate) fn allow_cached_circular_values(
+        &mut self,
+        cached_value_cells: &HashSet<CellId>,
+        changed_cells: &[CellId],
+    ) {
+        if self.circular_sccs.is_empty() {
+            return;
+        }
+
+        let dirty_nodes = self.dirty_nodes(changed_cells);
+        let allowed_sccs = self
+            .circular_sccs
+            .iter()
+            .copied()
+            .filter(|scc_index| {
+                let scc = &self.sccs[*scc_index];
+                let component_is_dirty = scc.iter().any(|node| dirty_nodes[*node]);
+                let component_has_only_circular_fallbacks = scc.iter().all(|node| {
+                    self.formula_fallback_codes[*node].len() == 1
+                        && self.formula_fallback_codes[*node].contains("circular_reference")
+                });
+                let component_has_cached_values = scc
+                    .iter()
+                    .all(|node| cached_value_cells.contains(&self.formula_cells[*node]));
+                !component_is_dirty
+                    && component_has_only_circular_fallbacks
+                    && component_has_cached_values
+            })
+            .collect::<HashSet<_>>();
+
+        if allowed_sccs.is_empty() {
+            return;
+        }
+
+        for scc_index in &allowed_sccs {
+            for node in &self.sccs[*scc_index] {
+                self.formula_fallback_codes[*node].remove("circular_reference");
+                self.formula_has_fallback[*node] = !self.formula_fallback_codes[*node].is_empty();
+            }
+        }
+
+        let allowed_circular_locations = self
+            .fallback_details
+            .iter()
+            .filter(|detail| {
+                detail.code == "circular_reference"
+                    && detail
+                        .circular_component
+                        .map(|component| allowed_sccs.contains(&component))
+                        .unwrap_or(false)
+            })
+            .filter_map(|detail| detail.location.clone())
+            .collect::<HashSet<_>>();
+
+        self.fallback_reasons.retain(|reason| {
+            reason.code != "circular_reference"
+                || reason
+                    .location
+                    .as_ref()
+                    .map(|location| !allowed_circular_locations.contains(location))
+                    .unwrap_or(true)
+        });
+        self.fallback_details.retain(|detail| {
+            detail.code != "circular_reference"
+                || detail
+                    .circular_component
+                    .map(|component| !allowed_sccs.contains(&component))
+                    .unwrap_or(true)
+        });
+        self.has_cached_circular_allowances = true;
     }
 
     pub(crate) fn dirty_summary(&self, changed_cells: &[CellId]) -> DirtySummary {
@@ -322,6 +417,45 @@ impl DependencyGraph {
                 .formula_count()
                 .saturating_sub(dirty_formula_cells),
         }
+    }
+
+    fn dirty_nodes(&self, changed_cells: &[CellId]) -> Vec<bool> {
+        if self.formula_cells.is_empty() || changed_cells.is_empty() {
+            return vec![false; self.formula_cells.len()];
+        }
+
+        let mut dirty_nodes = vec![false; self.formula_cells.len()];
+        let mut seen_cells = HashSet::new();
+        let mut queue = VecDeque::new();
+
+        for cell in changed_cells {
+            queue.push_back(*cell);
+            if let Some(node) = self.formula_node_by_cell.get(cell) {
+                self.mark_node_and_scc(*node, &mut dirty_nodes, &mut queue);
+            }
+        }
+
+        while let Some(cell) = queue.pop_front() {
+            if !seen_cells.insert(cell) {
+                continue;
+            }
+
+            if let Some(dependents) = self.dependents_by_cell.get(&cell) {
+                for dependent in dependents {
+                    self.mark_node_and_scc(*dependent, &mut dirty_nodes, &mut queue);
+                }
+            }
+
+            if let Some(range_dependents) = self.range_dependents_by_sheet.get(&cell.sheet) {
+                for dependency in range_dependents {
+                    if dependency.range.contains(cell) {
+                        self.mark_node_and_scc(dependency.dependent, &mut dirty_nodes, &mut queue);
+                    }
+                }
+            }
+        }
+
+        dirty_nodes
     }
 
     fn mark_node_and_scc(
@@ -937,5 +1071,43 @@ mod tests {
         assert!(details
             .iter()
             .any(|detail| detail.formula.as_deref() == Some("=A1")));
+    }
+
+    #[test]
+    fn allows_clean_cached_circular_components() {
+        let mut model = Model::new_empty("cached-cycle", "en", "UTC", "en").unwrap();
+        model.set_user_input(0, 1, 1, "=B1".to_string()).unwrap();
+        model.set_user_input(0, 1, 2, "=A1".to_string()).unwrap();
+
+        let mut graph = build_dependency_graph(&model);
+        let cached_cells = [CellId::new(0, 1, 1), CellId::new(0, 1, 2)]
+            .into_iter()
+            .collect::<HashSet<_>>();
+        graph.allow_cached_circular_values(&cached_cells, &[]);
+
+        assert_eq!(graph.coverage().fallback_formula_cells, 0);
+        assert!(graph.fallback_reasons().is_empty());
+        assert!(graph.fallback_details().is_empty());
+        assert_eq!(graph.supported_formula_cells().count(), 2);
+    }
+
+    #[test]
+    fn keeps_dirty_cached_circular_components_as_fallbacks() {
+        let mut model = Model::new_empty("dirty-cycle", "en", "UTC", "en").unwrap();
+        model.set_user_input(0, 1, 1, "1".to_string()).unwrap();
+        model.set_user_input(0, 1, 2, "=A1+C1".to_string()).unwrap();
+        model.set_user_input(0, 1, 3, "=B1".to_string()).unwrap();
+
+        let mut graph = build_dependency_graph(&model);
+        let cached_cells = [CellId::new(0, 1, 2), CellId::new(0, 1, 3)]
+            .into_iter()
+            .collect::<HashSet<_>>();
+        graph.allow_cached_circular_values(&cached_cells, &[CellId::new(0, 1, 1)]);
+
+        assert_eq!(graph.coverage().fallback_formula_cells, 2);
+        assert!(graph
+            .fallback_reasons()
+            .iter()
+            .all(|reason| reason.code == "circular_reference"));
     }
 }

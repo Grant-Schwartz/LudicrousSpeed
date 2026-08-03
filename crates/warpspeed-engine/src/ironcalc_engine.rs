@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -92,6 +92,7 @@ impl CalcEngine for IronCalcEngine {
                             &entry.import_fallbacks,
                             &entry.data_tables,
                             &data_tables,
+                            &entry.cached_formula_values,
                         );
                         result.benchmark = benchmark_summary(
                             snapshot,
@@ -129,8 +130,9 @@ impl CalcEngine for IronCalcEngine {
                         };
 
                     let mut graph_build_ms = 0;
-                    let graph_cache_hit = !applied.formula_changed;
-                    if applied.formula_changed {
+                    let graph_cache_hit =
+                        !applied.formula_changed && !entry.graph.has_cached_circular_allowances();
+                    if applied.formula_changed || entry.graph.has_cached_circular_allowances() {
                         let graph_started = Instant::now();
                         entry.graph = build_dependency_graph(&entry.model);
                         entry.structure_hash = entry.graph.structure_hash().to_string();
@@ -156,6 +158,7 @@ impl CalcEngine for IronCalcEngine {
                         &entry.import_fallbacks,
                         &entry.data_tables,
                         &entry.model,
+                        &entry.cached_formula_values,
                         started,
                         TimingBreakdown {
                             cache_lookup_ms,
@@ -192,6 +195,7 @@ impl CalcEngine for IronCalcEngine {
             &entry.import_fallbacks,
             &entry.data_tables,
             &entry.model,
+            &entry.cached_formula_values,
             started,
             TimingBreakdown {
                 cache_lookup_ms,
@@ -251,6 +255,7 @@ struct CachedWorkbook {
     graph: DependencyGraph,
     import_fallbacks: ImportFallbacks,
     data_tables: Vec<DataTableRegion>,
+    cached_formula_values: HashMap<CellId, CachedFormulaValue>,
     structure_hash: String,
     workbook_hash: String,
     last_result: Option<CalcResult>,
@@ -267,6 +272,7 @@ struct LoadedWorkbook {
     graph: DependencyGraph,
     import_fallbacks: ImportFallbacks,
     data_tables: Vec<DataTableRegion>,
+    cached_formula_values: HashMap<CellId, CachedFormulaValue>,
     structure_hash: String,
     workbook_hash: String,
     load_ms: u128,
@@ -282,6 +288,7 @@ impl LoadedWorkbook {
             graph: self.graph,
             import_fallbacks: self.import_fallbacks,
             data_tables: self.data_tables,
+            cached_formula_values: self.cached_formula_values,
             structure_hash: self.structure_hash,
             workbook_hash: self.workbook_hash,
             last_result: None,
@@ -313,6 +320,12 @@ impl Default for CalculationStrategy {
 struct AppliedChanges {
     changed_cells: Vec<CellId>,
     formula_changed: bool,
+}
+
+#[derive(Clone, Debug)]
+struct CachedFormulaValue {
+    value_kind: FormulaValueKind,
+    value: serde_json::Value,
 }
 
 fn cache_key(snapshot: &WorkbookSnapshot) -> Option<String> {
@@ -350,6 +363,7 @@ fn run_forced_reload(
         &entry.import_fallbacks,
         &entry.data_tables,
         &entry.model,
+        &entry.cached_formula_values,
         started,
         TimingBreakdown {
             cache_lookup_ms,
@@ -388,7 +402,13 @@ fn load_build_evaluate(snapshot: &WorkbookSnapshot) -> Result<LoadedWorkbook, En
     let load_ms = load_started.elapsed().as_millis();
 
     let graph_started = Instant::now();
-    let graph = build_dependency_graph(&model);
+    let mut graph = build_dependency_graph(&model);
+    let cached_formula_values = collect_cached_circular_formula_values(&model, &graph);
+    let cached_value_cells = cached_formula_values
+        .keys()
+        .copied()
+        .collect::<HashSet<_>>();
+    graph.allow_cached_circular_values(&cached_value_cells, &[]);
     let structure_hash = graph.structure_hash().to_string();
     let graph_build_ms = graph_started.elapsed().as_millis();
 
@@ -403,6 +423,7 @@ fn load_build_evaluate(snapshot: &WorkbookSnapshot) -> Result<LoadedWorkbook, En
         graph,
         import_fallbacks,
         data_tables,
+        cached_formula_values,
         structure_hash,
         workbook_hash,
         load_ms,
@@ -410,6 +431,22 @@ fn load_build_evaluate(snapshot: &WorkbookSnapshot) -> Result<LoadedWorkbook, En
         ironcalc_ms,
         data_table_summary,
     })
+}
+
+fn collect_cached_circular_formula_values(
+    model: &Model<'_>,
+    graph: &DependencyGraph,
+) -> HashMap<CellId, CachedFormulaValue> {
+    graph
+        .circular_formula_cells()
+        .filter_map(|cell| {
+            let (value_kind, value) = writeback_value_from_cell_value(
+                model.get_cell_value_by_index(cell.sheet, cell.row, cell.column),
+            )
+            .ok()?;
+            Some((cell, CachedFormulaValue { value_kind, value }))
+        })
+        .collect()
 }
 
 fn apply_changed_cells(
@@ -478,6 +515,7 @@ fn build_result(
     import_fallbacks: &ImportFallbacks,
     data_tables: &[DataTableRegion],
     model: &Model<'_>,
+    cached_formula_values: &HashMap<CellId, CachedFormulaValue>,
     started: Instant,
     timing: TimingBreakdown,
 ) -> CalcResult {
@@ -504,6 +542,7 @@ fn build_result(
             import_fallbacks,
             data_tables,
             &data_table_summary,
+            cached_formula_values,
         ),
     }
 }
@@ -515,6 +554,7 @@ fn build_writeback_plan(
     import_fallbacks: &ImportFallbacks,
     data_tables: &[DataTableRegion],
     data_table_summary: &DataTableBenchmarkSummary,
+    cached_formula_values: &HashMap<CellId, CachedFormulaValue>,
 ) -> ExcelWritebackPlan {
     let mut notes = vec![
         "Formulas are preserved; the Excel host must pass a live formula-cache probe before applying returned values.".to_string(),
@@ -550,7 +590,13 @@ fn build_writeback_plan(
     }
 
     let mut skipped_reasons = Vec::new();
-    let cells = collect_formula_writeback_cells(model, graph, data_tables, &mut skipped_reasons);
+    let cells = collect_formula_writeback_cells(
+        model,
+        graph,
+        data_tables,
+        cached_formula_values,
+        &mut skipped_reasons,
+    );
     let skipped = skipped_reasons.iter().map(|reason| reason.count).sum();
     let mode = if cells.is_empty() {
         notes.push(
@@ -594,6 +640,7 @@ fn collect_formula_writeback_cells(
     model: &Model<'_>,
     graph: &DependencyGraph,
     data_tables: &[DataTableRegion],
+    cached_formula_values: &HashMap<CellId, CachedFormulaValue>,
     skipped_reasons: &mut Vec<WritebackIssueSummary>,
 ) -> Vec<FormulaWritebackCell> {
     let mut cells = Vec::new();
@@ -642,13 +689,19 @@ fn collect_formula_writeback_cells(
             continue;
         }
 
-        let (value_kind, value) = match writeback_value_from_cell_value(
-            model.get_cell_value_by_index(cell.sheet, cell.row, cell.column),
-        ) {
-            Ok(value) => value,
-            Err((code, message)) => {
-                add_writeback_issue(skipped_reasons, code, message, 1);
-                continue;
+        let (value_kind, value) = if let Some(cached_value) = cached_formula_values.get(&cell) {
+            (cached_value.value_kind, cached_value.value.clone())
+        } else {
+            match writeback_value_from_cell_value(model.get_cell_value_by_index(
+                cell.sheet,
+                cell.row,
+                cell.column,
+            )) {
+                Ok(value) => value,
+                Err((code, message)) => {
+                    add_writeback_issue(skipped_reasons, code, message, 1);
+                    continue;
+                }
             }
         };
 
