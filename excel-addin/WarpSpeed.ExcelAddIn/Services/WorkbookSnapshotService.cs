@@ -22,7 +22,7 @@ namespace WarpSpeed.ExcelAddIn.Services
         public WorkbookSnapshot Create(string mode, long? excelBaselineMs)
         {
             dynamic excel = ExcelDnaUtil.Application;
-            dynamic workbook = excel.ActiveWorkbook;
+            Excel.Workbook workbook = excel.ActiveWorkbook;
             if (workbook == null)
             {
                 throw new InvalidOperationException("Open a workbook before running WarpSpeed.");
@@ -52,10 +52,10 @@ namespace WarpSpeed.ExcelAddIn.Services
             {
                 tempPath = Path.Combine(
                     Path.GetTempPath(),
-                    $"warpspeed-{Guid.NewGuid():N}.tmp.xlsx");
+                    $"warpspeed-{Guid.NewGuid():N}.xlsx");
 
                 var snapshotStopwatch = Stopwatch.StartNew();
-                workbook.SaveCopyAs(tempPath);
+                SaveWorkbookCopy(workbook, tempPath);
                 snapshotStopwatch.Stop();
                 snapshotSaveMs = snapshotStopwatch.ElapsedMilliseconds;
             }
@@ -136,6 +136,20 @@ namespace WarpSpeed.ExcelAddIn.Services
             }
 
             return Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
+        }
+
+        private static void SaveWorkbookCopy(Excel.Workbook workbook, string tempPath)
+        {
+            try
+            {
+                workbook.SaveCopyAs(tempPath);
+            }
+            catch (COMException ex)
+            {
+                throw new InvalidOperationException(
+                    "Excel could not save a temporary workbook copy for WarpSpeed. Save the workbook as an .xlsx file, close Protected View or permission prompts, and try again. Details: " + ex.Message,
+                    ex);
+            }
         }
     }
 }
