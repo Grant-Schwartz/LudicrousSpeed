@@ -58,7 +58,7 @@ namespace WarpSpeed.ExcelAddIn
                   supertip='Evaluate the active workbook with IronCalc first and Excel fallback for unsupported regions.' />
           <button id='BenchmarkWorkbookButton'
                   label='Benchmark'
-                  imageMso='Gauge'
+                  imageMso='CalculateNow'
                   size='large'
                   onAction='BenchmarkWorkbook'
                   screentip='Benchmark Workbook'
