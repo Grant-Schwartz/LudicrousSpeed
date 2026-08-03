@@ -489,6 +489,7 @@ fn build_result(
             ironcalc_can_evaluate: fallback_reasons.is_empty(),
             coverage: coverage_with_import_fallbacks(graph, import_fallbacks),
             fallback_reasons,
+            fallback_details: merged_fallback_details(graph, import_fallbacks),
         },
         benchmark: benchmark_summary(snapshot, started, timing),
         writeback: build_writeback_plan(snapshot, model, graph, import_fallbacks, data_tables),
@@ -837,6 +838,15 @@ fn merged_fallback_reasons(
     let mut fallback_reasons = import_fallbacks.fallback_reasons.clone();
     fallback_reasons.extend(graph.fallback_reasons());
     fallback_reasons
+}
+
+fn merged_fallback_details(
+    graph: &DependencyGraph,
+    import_fallbacks: &ImportFallbacks,
+) -> Vec<crate::model::FallbackDetail> {
+    let mut fallback_details = import_fallbacks.fallback_details.clone();
+    fallback_details.extend(graph.fallback_details());
+    fallback_details
 }
 
 fn coverage_with_import_fallbacks(

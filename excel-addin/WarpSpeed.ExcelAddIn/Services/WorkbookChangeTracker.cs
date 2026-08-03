@@ -12,6 +12,7 @@ namespace WarpSpeed.ExcelAddIn.Services
     {
         public const int DirtyCellLimit = 10000;
         private const string ReportSheetName = "_WarpSpeed_Report";
+        private const string FallbackSheetName = "_WarpSpeed_Fallbacks";
 
         private readonly object gate = new object();
         private readonly Dictionary<string, WorkbookDirtyState> states =
@@ -132,7 +133,13 @@ namespace WarpSpeed.ExcelAddIn.Services
             var names = new List<string>();
             foreach (Excel.Worksheet worksheet in workbook.Worksheets)
             {
-                names.Add(Convert.ToString(worksheet.Name, CultureInfo.InvariantCulture) ?? "");
+                var name = Convert.ToString(worksheet.Name, CultureInfo.InvariantCulture) ?? "";
+                if (IsWarpSpeedReportSheet(name))
+                {
+                    continue;
+                }
+
+                names.Add(name);
             }
 
             return string.Join("\u001f", names);
@@ -157,7 +164,7 @@ namespace WarpSpeed.ExcelAddIn.Services
                 }
 
                 var sheetName = Convert.ToString(worksheet.Name, CultureInfo.InvariantCulture) ?? "";
-                if (string.Equals(sheetName, ReportSheetName, StringComparison.OrdinalIgnoreCase))
+                if (IsWarpSpeedReportSheet(sheetName))
                 {
                     return;
                 }
@@ -263,6 +270,12 @@ namespace WarpSpeed.ExcelAddIn.Services
             }
 
             return state;
+        }
+
+        private static bool IsWarpSpeedReportSheet(string sheetName)
+        {
+            return string.Equals(sheetName, ReportSheetName, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sheetName, FallbackSheetName, StringComparison.OrdinalIgnoreCase);
         }
     }
 

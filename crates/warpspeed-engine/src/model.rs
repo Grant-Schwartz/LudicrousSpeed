@@ -76,6 +76,16 @@ pub struct FallbackReason {
     pub location: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FallbackDetail {
+    pub code: String,
+    pub message: String,
+    pub location: Option<String>,
+    pub formula: Option<String>,
+    pub circular_component: Option<usize>,
+    pub circular_component_size: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct FormulaCoverage {
     pub formula_cells: usize,
@@ -105,6 +115,7 @@ pub struct AnalysisSummary {
     pub workbook_name: Option<String>,
     pub coverage: FormulaCoverage,
     pub fallback_reasons: Vec<FallbackReason>,
+    pub fallback_details: Vec<FallbackDetail>,
     pub ironcalc_can_evaluate: bool,
 }
 

@@ -8,6 +8,7 @@ namespace WarpSpeed.ExcelAddIn.Services
     internal sealed class ReportSheetWriter
     {
         private const string ReportSheetName = "_WarpSpeed_Report";
+        private const string FallbackSheetName = "_WarpSpeed_Fallbacks";
         private const int MaxDataTableDiagnostics = 20;
         private const int MaxFallbackSamples = 50;
         private const int MaxWritebackFailures = 20;
@@ -16,7 +17,7 @@ namespace WarpSpeed.ExcelAddIn.Services
         {
             dynamic excel = ExcelDnaUtil.Application;
             dynamic workbook = excel.ActiveWorkbook;
-            dynamic sheet = EnsureReportSheet(workbook);
+            dynamic sheet = EnsureReportSheet(workbook, ReportSheetName);
 
             sheet.Cells.Clear();
             sheet.Range["A1"].Value2 = "WarpSpeed Report";
@@ -29,10 +30,13 @@ namespace WarpSpeed.ExcelAddIn.Services
                 sheet.Range["A5"].Value2 = "Message";
                 sheet.Range["B5"].Value2 = response.Error ?? "Unknown error";
                 sheet.Columns.AutoFit();
+                WriteFallbackDetails(workbook, new List<FallbackDetail>());
                 return;
             }
 
             var result = response.Result;
+            WriteFallbackDetails(workbook, result.Analysis.FallbackDetails);
+
             sheet.Range["A4"].Value2 = "Status";
             sheet.Range["B4"].Value2 = "Complete";
             sheet.Range["A6"].Value2 = "Formula cells";
@@ -221,6 +225,9 @@ namespace WarpSpeed.ExcelAddIn.Services
             row += 2;
             sheet.Range[$"A{row}"].Value2 = "Fallback reasons";
             sheet.Range[$"B{row}"].Value2 = result.Analysis.FallbackReasons.Count;
+            row++;
+            sheet.Range[$"A{row}"].Value2 = "Fallback detail rows";
+            sheet.Range[$"B{row}"].Value2 = result.Analysis.FallbackDetails.Count;
 
             row += 2;
             sheet.Range[$"A{row}"].Value2 = "Fallback code";
@@ -293,18 +300,51 @@ namespace WarpSpeed.ExcelAddIn.Services
             sheet.Range[address].Value2 = value ?? "";
         }
 
-        private static dynamic EnsureReportSheet(dynamic workbook)
+        private static void WriteFallbackDetails(dynamic workbook, List<FallbackDetail> details)
+        {
+            dynamic sheet = EnsureReportSheet(workbook, FallbackSheetName);
+            sheet.Cells.Clear();
+
+            var values = new object[details.Count + 1, 6];
+            values[0, 0] = "Fallback code";
+            values[0, 1] = "Location";
+            values[0, 2] = "Circular component";
+            values[0, 3] = "Component size";
+            values[0, 4] = "Message";
+            values[0, 5] = "Formula";
+
+            for (var index = 0; index < details.Count; index++)
+            {
+                var detail = details[index];
+                var row = index + 1;
+                values[row, 0] = detail.Code;
+                values[row, 1] = detail.Location ?? "";
+                values[row, 2] = detail.CircularComponent.HasValue
+                    ? (object)(detail.CircularComponent.Value + 1)
+                    : "";
+                values[row, 3] = detail.CircularComponentSize.HasValue
+                    ? (object)detail.CircularComponentSize.Value
+                    : "";
+                values[row, 4] = detail.Message;
+                values[row, 5] = detail.Formula ?? "";
+            }
+
+            sheet.Range[$"A1:F{details.Count + 1}"].Value2 = values;
+            sheet.Columns.AutoFit();
+        }
+
+        private static dynamic EnsureReportSheet(dynamic workbook, string sheetName)
         {
             foreach (dynamic worksheet in workbook.Worksheets)
             {
-                if (Convert.ToString(worksheet.Name) == ReportSheetName)
+                if (Convert.ToString(worksheet.Name) == sheetName)
                 {
                     return worksheet;
                 }
             }
 
             dynamic sheet = workbook.Worksheets.Add();
-            sheet.Name = ReportSheetName;
+            sheet.Name = sheetName;
             return sheet;
         }
     }

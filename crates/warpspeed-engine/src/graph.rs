@@ -6,7 +6,7 @@ use ironcalc::base::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::model::{FallbackReason, FormulaCoverage};
+use crate::model::{FallbackDetail, FallbackReason, FormulaCoverage};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub(crate) struct CellId {
@@ -66,6 +66,7 @@ pub(crate) struct DependencyGraph {
     scc_by_node: Vec<usize>,
     formula_has_fallback: Vec<bool>,
     fallback_reasons: Vec<FallbackReason>,
+    fallback_details: Vec<FallbackDetail>,
     structure_hash: String,
 }
 
@@ -109,6 +110,7 @@ pub(crate) fn build_dependency_graph(model: &Model<'_>) -> DependencyGraph {
     let mut adjacency = vec![Vec::new(); formula_entries.len()];
     let mut formula_has_fallback = vec![false; formula_entries.len()];
     let mut fallback_reasons = Vec::new();
+    let mut fallback_details = Vec::new();
     let mut fallback_keys = HashSet::new();
 
     for (dependent_node, (cell, formula_index)) in formula_entries.iter().enumerate() {
@@ -118,12 +120,17 @@ pub(crate) fn build_dependency_graph(model: &Model<'_>) -> DependencyGraph {
             .and_then(|formulas| formulas.get(*formula_index as usize))
         else {
             formula_has_fallback[dependent_node] = true;
-            add_fallback_reason(
+            let location = Some(format_cell_location(model, *cell));
+            add_fallback(
                 &mut fallback_reasons,
                 &mut fallback_keys,
+                &mut fallback_details,
                 "missing_parsed_formula",
                 "Formula cell does not have a parsed IronCalc node.".to_string(),
-                Some(format_cell_location(model, *cell)),
+                location,
+                formula_text_for_cell(model, *cell),
+                None,
+                None,
             );
             continue;
         };
@@ -134,12 +141,17 @@ pub(crate) fn build_dependency_graph(model: &Model<'_>) -> DependencyGraph {
         if !dependencies.fallbacks.is_empty() {
             formula_has_fallback[dependent_node] = true;
             for fallback in dependencies.fallbacks {
-                add_fallback_reason(
+                let location = Some(format_cell_location(model, *cell));
+                add_fallback(
                     &mut fallback_reasons,
                     &mut fallback_keys,
+                    &mut fallback_details,
                     fallback.code,
                     fallback.message,
-                    Some(format_cell_location(model, *cell)),
+                    location,
+                    formula_text_for_cell(model, *cell),
+                    None,
+                    None,
                 );
             }
         }
@@ -183,17 +195,23 @@ pub(crate) fn build_dependency_graph(model: &Model<'_>) -> DependencyGraph {
         }
     }
 
-    for scc in &sccs {
+    for (scc_index, scc) in sccs.iter().enumerate() {
         let is_cycle = scc.len() > 1 || scc.iter().any(|node| adjacency[*node].contains(node));
         if is_cycle {
             for node in scc {
                 formula_has_fallback[*node] = true;
-                add_fallback_reason(
+                let cell = formula_entries[*node].0;
+                let location = Some(format_cell_location(model, cell));
+                add_fallback(
                     &mut fallback_reasons,
                     &mut fallback_keys,
+                    &mut fallback_details,
                     "circular_reference",
                     "Formula participates in a circular dependency component.".to_string(),
-                    Some(format_cell_location(model, formula_entries[*node].0)),
+                    location,
+                    formula_text_for_cell(model, cell),
+                    Some(scc_index),
+                    Some(scc.len()),
                 );
             }
         }
@@ -211,6 +229,7 @@ pub(crate) fn build_dependency_graph(model: &Model<'_>) -> DependencyGraph {
         scc_by_node,
         formula_has_fallback,
         fallback_reasons,
+        fallback_details,
         structure_hash,
     }
 }
@@ -230,6 +249,10 @@ impl DependencyGraph {
 
     pub(crate) fn fallback_reasons(&self) -> Vec<FallbackReason> {
         self.fallback_reasons.clone()
+    }
+
+    pub(crate) fn fallback_details(&self) -> Vec<FallbackDetail> {
+        self.fallback_details.clone()
     }
 
     pub(crate) fn coverage(&self) -> FormulaCoverage {
@@ -541,21 +564,34 @@ fn tarjan_scc(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
     tarjan.sccs
 }
 
-fn add_fallback_reason(
+fn add_fallback(
     fallback_reasons: &mut Vec<FallbackReason>,
     fallback_keys: &mut HashSet<(String, Option<String>)>,
+    fallback_details: &mut Vec<FallbackDetail>,
     code: &str,
     message: String,
     location: Option<String>,
+    formula: Option<String>,
+    circular_component: Option<usize>,
+    circular_component_size: Option<usize>,
 ) {
     let key = (code.to_string(), location.clone());
     if fallback_keys.insert(key) {
         fallback_reasons.push(FallbackReason {
             code: code.to_string(),
-            message,
-            location,
+            message: message.clone(),
+            location: location.clone(),
         });
     }
+
+    fallback_details.push(FallbackDetail {
+        code: code.to_string(),
+        message,
+        location,
+        formula,
+        circular_component,
+        circular_component_size,
+    });
 }
 
 fn format_cell_location(model: &Model<'_>, cell: CellId) -> String {
@@ -567,6 +603,13 @@ fn format_cell_location(model: &Model<'_>, cell: CellId) -> String {
         .unwrap_or("<unknown>");
     let column = number_to_column(cell.column).unwrap_or_else(|| format!("C{}", cell.column));
     format!("{sheet}!{column}{}", cell.row)
+}
+
+fn formula_text_for_cell(model: &Model<'_>, cell: CellId) -> Option<String> {
+    model
+        .get_cell_formula(cell.sheet, cell.row, cell.column)
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]
@@ -667,6 +710,10 @@ mod tests {
         assert_eq!(graph.coverage().formula_cells, 2);
         assert_eq!(graph.coverage().fallback_formula_cells, 2);
         assert!(!graph.is_result_cache_safe());
+        assert!(graph
+            .fallback_details()
+            .iter()
+            .any(|detail| detail.formula.as_deref() == Some("=INDIRECT(\"A2\")")));
     }
 
     #[test]
@@ -683,5 +730,16 @@ mod tests {
                 .dirty_formula_cells,
             2
         );
+        let details = graph.fallback_details();
+        assert_eq!(details.len(), 2);
+        assert!(details
+            .iter()
+            .all(|detail| detail.code == "circular_reference"));
+        assert!(details
+            .iter()
+            .all(|detail| detail.circular_component_size == Some(2)));
+        assert!(details
+            .iter()
+            .any(|detail| detail.formula.as_deref() == Some("=A1")));
     }
 }

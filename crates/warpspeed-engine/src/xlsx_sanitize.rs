@@ -10,17 +10,20 @@ use zip::write::FileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 use crate::data_tables::{build_data_table_region, DataTableRegion};
-use crate::model::{EngineError, FallbackReason};
+use crate::model::{EngineError, FallbackDetail, FallbackReason};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ImportFallbacks {
     pub fallback_formula_cells: usize,
     pub fallback_reasons: Vec<FallbackReason>,
+    pub fallback_details: Vec<FallbackDetail>,
 }
 
 impl ImportFallbacks {
     pub(crate) fn is_empty(&self) -> bool {
-        self.fallback_formula_cells == 0 && self.fallback_reasons.is_empty()
+        self.fallback_formula_cells == 0
+            && self.fallback_reasons.is_empty()
+            && self.fallback_details.is_empty()
     }
 }
 
@@ -82,6 +85,9 @@ pub(crate) fn sanitize_data_table_formulas(
             fallbacks
                 .fallback_reasons
                 .extend(sanitized.fallbacks.fallback_reasons);
+            fallbacks
+                .fallback_details
+                .extend(sanitized.fallbacks.fallback_details);
             data_tables.extend(sanitized.data_tables);
             replacements.insert(part_name, sanitized.xml.into_bytes());
         }
@@ -150,7 +156,17 @@ pub(crate) fn strip_data_table_formulas_from_sheet_xml(
                 message:
                     "Excel native data table formula was preserved as its cached value for import."
                         .to_string(),
+                location: location.clone(),
+            });
+            fallbacks.fallback_details.push(FallbackDetail {
+                code: "data_table_formula".to_string(),
+                message:
+                    "Excel native data table formula was preserved as its cached value for import."
+                        .to_string(),
                 location,
+                formula: Some(data_table_formula_summary(&formula)),
+                circular_component: None,
+                circular_component_size: None,
             });
 
             if let Some(range_address) = formula.get("ref") {
@@ -331,6 +347,15 @@ fn formula_bool(attrs: &HashMap<String, String>, key: &str) -> bool {
     )
 }
 
+fn data_table_formula_summary(attrs: &HashMap<String, String>) -> String {
+    let mut pairs = attrs
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>();
+    pairs.sort();
+    format!("dataTable {}", pairs.join(" "))
+}
+
 fn xml_unescape(value: &str) -> String {
     value
         .replace("&quot;", "\"")
@@ -461,6 +486,10 @@ mod tests {
         assert_eq!(
             sanitized.fallbacks.fallback_reasons[0].location.as_deref(),
             Some("Data Tables!F450:J454")
+        );
+        assert_eq!(
+            sanitized.fallbacks.fallback_details[0].formula.as_deref(),
+            Some("dataTable dt2D=1 dtr=1 r1=E32 r2=O9 ref=F450:J454 t=dataTable")
         );
         assert_eq!(sanitized.data_tables[0].range_address, "F450:J454");
         assert_eq!(

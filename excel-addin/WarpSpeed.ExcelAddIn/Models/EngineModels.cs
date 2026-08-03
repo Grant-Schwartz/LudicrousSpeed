@@ -144,6 +144,9 @@ namespace WarpSpeed.ExcelAddIn.Models
         [JsonProperty("fallback_reasons")]
         public List<FallbackReason> FallbackReasons { get; set; } = new List<FallbackReason>();
 
+        [JsonProperty("fallback_details")]
+        public List<FallbackDetail> FallbackDetails { get; set; } = new List<FallbackDetail>();
+
         [JsonProperty("ironcalc_can_evaluate")]
         public bool IronCalcCanEvaluate { get; set; }
     }
@@ -170,6 +173,27 @@ namespace WarpSpeed.ExcelAddIn.Models
 
         [JsonProperty("location")]
         public string? Location { get; set; }
+    }
+
+    internal sealed class FallbackDetail
+    {
+        [JsonProperty("code")]
+        public string Code { get; set; } = "";
+
+        [JsonProperty("message")]
+        public string Message { get; set; } = "";
+
+        [JsonProperty("location")]
+        public string? Location { get; set; }
+
+        [JsonProperty("formula")]
+        public string? Formula { get; set; }
+
+        [JsonProperty("circular_component")]
+        public int? CircularComponent { get; set; }
+
+        [JsonProperty("circular_component_size")]
+        public int? CircularComponentSize { get; set; }
     }
 
     internal sealed class BenchmarkSummary

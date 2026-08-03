@@ -10,7 +10,7 @@ pub use engine::{CalcEngine, WarpSpeedEngine};
 pub use model::{
     AnalysisSummary, BenchmarkSummary, CalcMode, CalcPlan, CalcResult, CalculationStrategy,
     ChangedCell, DataTableBenchmarkSummary, DataTableDiagnostic, DataTableEvaluationStatus,
-    EngineError, ExcelWritebackPlan, FallbackReason, FormulaCoverage, FormulaValueKind,
-    FormulaWritebackCell, WorkbookSnapshot, WritebackCellFailure, WritebackIssueSummary,
-    WritebackMode,
+    EngineError, ExcelWritebackPlan, FallbackDetail, FallbackReason, FormulaCoverage,
+    FormulaValueKind, FormulaWritebackCell, WorkbookSnapshot, WritebackCellFailure,
+    WritebackIssueSummary, WritebackMode,
 };
