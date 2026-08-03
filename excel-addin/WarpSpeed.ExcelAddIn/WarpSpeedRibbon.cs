@@ -8,6 +8,7 @@ using ExcelDna.Integration.CustomUI;
 using WarpSpeed.ExcelAddIn.Interop;
 using WarpSpeed.ExcelAddIn.Models;
 using WarpSpeed.ExcelAddIn.Services;
+using Excel = Microsoft.Office.Interop.Excel;
 
 namespace WarpSpeed.ExcelAddIn
 {
@@ -101,6 +102,7 @@ namespace WarpSpeed.ExcelAddIn
         private void Run(string mode, bool includeExcelBaseline)
         {
             WorkbookSnapshot? snapshot = null;
+            using var calculationGuard = ExcelCalculationGuard.Enter(disableNativeDataTables: !includeExcelBaseline);
             try
             {
                 var excelBaselineMs = MeasureExcelBaseline(includeExcelBaseline);
@@ -154,6 +156,51 @@ namespace WarpSpeed.ExcelAddIn
             finally
             {
                 TryDeleteSnapshot(snapshot);
+            }
+        }
+
+        private sealed class ExcelCalculationGuard : IDisposable
+        {
+            private readonly Excel.Application excel;
+            private readonly Excel.XlCalculation previousCalculation;
+            private readonly bool disableNativeDataTables;
+            private bool disposed;
+
+            private ExcelCalculationGuard(Excel.Application excel, bool disableNativeDataTables)
+            {
+                this.excel = excel;
+                this.disableNativeDataTables = disableNativeDataTables;
+                previousCalculation = excel.Calculation;
+
+                if (disableNativeDataTables)
+                {
+                    excel.Calculation = Excel.XlCalculation.xlCalculationManual;
+                }
+            }
+
+            public static ExcelCalculationGuard Enter(bool disableNativeDataTables)
+            {
+                return new ExcelCalculationGuard(
+                    (Excel.Application)ExcelDnaUtil.Application,
+                    disableNativeDataTables);
+            }
+
+            public void Dispose()
+            {
+                if (disposed)
+                {
+                    return;
+                }
+
+                disposed = true;
+                if (!disableNativeDataTables)
+                {
+                    return;
+                }
+
+                excel.Calculation = previousCalculation == Excel.XlCalculation.xlCalculationAutomatic
+                    ? Excel.XlCalculation.xlCalculationSemiautomatic
+                    : previousCalculation;
             }
         }
 
