@@ -39,6 +39,9 @@ namespace WarpSpeed.ExcelAddIn.Models
         [JsonProperty("language")]
         public string Language { get; set; } = "en";
 
+        [JsonProperty("inline_workbook")]
+        public InlineWorkbook? InlineWorkbook { get; set; }
+
         [JsonIgnore]
         public long SnapshotSaveMs { get; set; }
 
@@ -68,6 +71,53 @@ namespace WarpSpeed.ExcelAddIn.Models
 
         [JsonProperty("is_formula")]
         public bool IsFormula { get; set; }
+    }
+
+    /// <summary>
+    /// A full workbook snapshot built directly from a bulk COM read of the
+    /// live workbook, as an alternative to SaveCopyAs + re-importing the
+    /// saved .xlsx from disk. See InMemoryWorkbookReader.
+    /// </summary>
+    internal sealed class InlineWorkbook
+    {
+        [JsonProperty("sheets")]
+        public List<InlineSheet> Sheets { get; set; } = new List<InlineSheet>();
+
+        [JsonProperty("defined_names")]
+        public List<InlineDefinedName> DefinedNames { get; set; } = new List<InlineDefinedName>();
+    }
+
+    internal sealed class InlineSheet
+    {
+        [JsonProperty("name")]
+        public string Name { get; set; } = "";
+
+        [JsonProperty("cells")]
+        public List<InlineCell> Cells { get; set; } = new List<InlineCell>();
+    }
+
+    internal sealed class InlineCell
+    {
+        [JsonProperty("row")]
+        public int Row { get; set; }
+
+        [JsonProperty("column")]
+        public int Column { get; set; }
+
+        [JsonProperty("input")]
+        public string Input { get; set; } = "";
+    }
+
+    internal sealed class InlineDefinedName
+    {
+        [JsonProperty("name")]
+        public string Name { get; set; } = "";
+
+        [JsonProperty("scope_sheet_name")]
+        public string? ScopeSheetName { get; set; }
+
+        [JsonProperty("formula")]
+        public string Formula { get; set; } = "";
     }
 
     internal sealed class HostRunMetrics

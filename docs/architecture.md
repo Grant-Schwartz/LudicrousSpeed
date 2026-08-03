@@ -25,8 +25,28 @@ The Rust engine owns workbook evaluation planning:
 
 The prototype bridge is file-based: Excel saves a temporary `.xlsx`, Rust loads
 it, evaluates it, and returns JSON over a C ABI. This favors fast validation over
-maximum performance. Once coverage and correctness are proven, direct in-memory
-translation can replace the file bridge behind the same `CalcEngine` boundary.
+maximum performance.
+
+### In-memory bridge (opt-in, unverified against live Excel)
+
+A second, in-memory bridge now exists behind `WorkbookSnapshot.inline_workbook`
+in the Rust engine and `WARPSPEED_INLINE_SNAPSHOT=1` in the Excel host, as an
+alternative to `SaveCopyAs` + re-importing the saved `.xlsx` on a cold load.
+`InMemoryWorkbookReader` (C#) bulk-reads every worksheet's `UsedRange.Formula`
+and the workbook's defined names directly over COM; `build_model_from_inline`
+(Rust, in `ironcalc_engine.rs`) constructs the IronCalc `Model` straight from
+that data via `Model::new_empty`/`set_user_input`/`new_defined_name`, the same
+public API IronCalc itself uses, skipping the xlsx zip/XML import path
+entirely. Individual cells IronCalc rejects are recorded as fallbacks and
+skipped rather than failing the whole build.
+
+This is off by default and should stay that way until it has been built and
+exercised on a real Windows + Excel machine — the environment that authored it
+had neither. See the doc comment on `InMemoryWorkbookReader` and the
+acceptance checklist in `docs/windows-testing.md` before enabling it. Two
+known, deliberate gaps versus the file-based path: native Excel data table
+array formulas aren't specially detected yet (they still work correctly via
+the file-based path), and only `UsedRange` per sheet is read.
 
 For recalculation runs where the workbook has no fallback regions, Rust includes
 typed formula-result candidates in the JSON response. The Excel host only applies

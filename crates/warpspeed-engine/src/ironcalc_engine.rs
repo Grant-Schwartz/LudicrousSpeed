@@ -17,7 +17,7 @@ use crate::model::{
     AnalysisSummary, BenchmarkSummary, CalcMode, CalcPlan, CalcResult, CalculationStrategy,
     ChangedCell, DataTableBenchmarkSummary, DataTableEvaluationStatus, EngineError,
     ExcelWritebackPlan, FallbackDetail, FallbackReason, FormulaCoverage, FormulaValueKind,
-    FormulaWritebackCell, WorkbookSnapshot, WritebackIssueSummary, WritebackMode,
+    FormulaWritebackCell, InlineWorkbook, WorkbookSnapshot, WritebackIssueSummary, WritebackMode,
 };
 use crate::xlsx_sanitize::{
     remove_sanitized_workbook, sanitize_data_table_formulas, ImportFallbacks,
@@ -394,23 +394,40 @@ fn run_forced_reload(
 }
 
 fn load_build_evaluate(snapshot: &WorkbookSnapshot) -> Result<LoadedWorkbook, EngineError> {
-    let workbook_path = snapshot.workbook_path.trim();
-    if workbook_path.is_empty() {
-        return Err(EngineError::WorkbookLoad(
-            "cache miss requires workbook_path".to_string(),
-        ));
-    }
-
     let load_started = Instant::now();
-    let bytes =
-        fs::read(workbook_path).map_err(|err| EngineError::WorkbookLoad(err.to_string()))?;
-    let workbook_hash = format!("{:x}", Sha256::digest(&bytes));
-    let (mut model, import_fallbacks, data_tables) = load_model_with_import_fallbacks(
-        workbook_path,
-        &workbook_hash,
-        &snapshot.locale,
-        &snapshot.timezone,
-    )?;
+    let (mut model, import_fallbacks, data_tables, workbook_hash) =
+        if let Some(inline) = snapshot.inline_workbook.as_ref() {
+            let workbook_hash = format!(
+                "{:x}",
+                Sha256::digest(
+                    serde_json::to_vec(inline)
+                        .map_err(|err| EngineError::WorkbookLoad(err.to_string()))?
+                )
+            );
+            let (model, import_fallbacks) = build_model_from_inline(inline)?;
+            // No xlsx to scan for native Excel data-table array formulas in this
+            // path yet; any such cells were already sent as plain formula text
+            // and will surface as ordinary fallback/parse issues rather than
+            // being recognized as data table regions. See InlineWorkbook docs.
+            (model, import_fallbacks, Vec::new(), workbook_hash)
+        } else {
+            let workbook_path = snapshot.workbook_path.trim();
+            if workbook_path.is_empty() {
+                return Err(EngineError::WorkbookLoad(
+                    "cache miss requires workbook_path or inline_workbook".to_string(),
+                ));
+            }
+            let bytes = fs::read(workbook_path)
+                .map_err(|err| EngineError::WorkbookLoad(err.to_string()))?;
+            let workbook_hash = format!("{:x}", Sha256::digest(&bytes));
+            let (model, import_fallbacks, data_tables) = load_model_with_import_fallbacks(
+                workbook_path,
+                &workbook_hash,
+                &snapshot.locale,
+                &snapshot.timezone,
+            )?;
+            (model, import_fallbacks, data_tables, workbook_hash)
+        };
     let load_ms = load_started.elapsed().as_millis();
 
     let graph_started = Instant::now();
@@ -932,6 +949,98 @@ fn load_model_with_import_fallbacks(
     }
 }
 
+/// Builds an IronCalc model directly from cell data already collected by the
+/// host (e.g. read in bulk over COM from the live Excel workbook), instead of
+/// going through an xlsx file at all. Individual cells or defined names that
+/// IronCalc rejects are recorded as fallbacks and skipped rather than failing
+/// the whole build, since a single bad cell (for example a native Excel data
+/// table array formula sent as plain text, which this path does not yet
+/// recognize) shouldn't take down an otherwise-good workbook.
+fn build_model_from_inline(
+    inline: &InlineWorkbook,
+) -> Result<(Model<'static>, ImportFallbacks), EngineError> {
+    let mut model = Model::new_empty("workbook", "en", "UTC", CACHE_LANGUAGE)
+        .map_err(EngineError::WorkbookLoad)?;
+    let mut fallbacks = ImportFallbacks::default();
+
+    for (sheet_index, sheet) in inline.sheets.iter().enumerate() {
+        if sheet_index == 0 {
+            model
+                .rename_sheet_by_index(0, &sheet.name)
+                .map_err(EngineError::WorkbookLoad)?;
+        } else {
+            model
+                .add_sheet(&sheet.name)
+                .map_err(EngineError::WorkbookLoad)?;
+        }
+    }
+
+    for (sheet_index, sheet) in inline.sheets.iter().enumerate() {
+        for cell in &sheet.cells {
+            if let Err(message) =
+                model.set_user_input(sheet_index as u32, cell.row, cell.column, cell.input.clone())
+            {
+                record_inline_fallback(
+                    &mut fallbacks,
+                    "unsupported_formula",
+                    format!("Cell could not be set on the in-memory model: {message}"),
+                    Some(format!(
+                        "{}!R{}C{}",
+                        sheet.name, cell.row, cell.column
+                    )),
+                    Some(cell.input.clone()),
+                );
+            }
+        }
+    }
+
+    for defined_name in &inline.defined_names {
+        let scope = defined_name
+            .scope_sheet_name
+            .as_deref()
+            .and_then(|name| sheet_index_by_name(&model, name));
+        if let Err(message) =
+            model.new_defined_name(&defined_name.name, scope, &defined_name.formula)
+        {
+            record_inline_fallback(
+                &mut fallbacks,
+                "unsupported_reference",
+                format!(
+                    "Defined name {} could not be created on the in-memory model: {message}",
+                    defined_name.name
+                ),
+                None,
+                Some(defined_name.formula.clone()),
+            );
+        }
+    }
+
+    Ok((model, fallbacks))
+}
+
+fn record_inline_fallback(
+    fallbacks: &mut ImportFallbacks,
+    code: &str,
+    message: String,
+    location: Option<String>,
+    formula: Option<String>,
+) {
+    fallbacks.fallback_formula_cells += 1;
+    fallbacks.fallback_reasons.push(FallbackReason {
+        code: code.to_string(),
+        message: message.clone(),
+        location: location.clone(),
+    });
+    fallbacks.fallback_details.push(FallbackDetail {
+        code: code.to_string(),
+        message,
+        location,
+        formula,
+        circular_component: None,
+        circular_component_size: None,
+    });
+}
+
 fn merged_fallback_reasons(
     graph: &DependencyGraph,
     import_fallbacks: &ImportFallbacks,
@@ -1010,6 +1119,7 @@ mod tests {
             locale: "en".to_string(),
             timezone: "UTC".to_string(),
             language: "en".to_string(),
+            inline_workbook: None,
         };
 
         assert!(snapshot.validate().is_err());

@@ -84,6 +84,31 @@ If a future supported setter passes the probe, the same smoke test should show
 `Restore Last Results` should run a full Excel rebuild and restore the previous
 calculation mode.
 
+## In-Memory Snapshot Acceptance Test (Unverified Feature)
+
+`InMemoryWorkbookReader` and its wiring in `WorkbookSnapshotService` were
+written without access to Windows or Excel and have not been built or run
+against live Excel. Before trusting `WARPSPEED_INLINE_SNAPSHOT=1` for
+anything beyond experimentation, verify:
+
+1. `dotnet build` / MSBuild succeeds — first confirm the COM member accesses
+   (`Range.Formula`, `Workbook.Names`, `Name.RefersTo`) actually compile
+   against this project's pinned `ExcelDna.Interop` version.
+2. Set the environment variable, open a workbook covering: plain numbers,
+   text, booleans, dates, at least one formula error (e.g. `=1/0`), a
+   workbook-scoped defined name, and a sheet-scoped defined name.
+3. Run `Analyze Workbook` once with the variable set and once unset (file-based
+   path). Diff the two `_WarpSpeed_Report` sheets' coverage, fallback, and
+   fallback-detail sections — they should match exactly except for timing.
+4. Repeat step 3 on `outputs\lbo-fixtures\ALMS_v11.xlsx` (or another large real
+   model) and compare `Rust load ms` between the two runs — this is the number
+   the feature exists to shrink.
+5. Try a workbook containing a native two-input data table and confirm it
+   still falls back correctly (this path doesn't detect data tables yet; see
+   `docs/architecture.md`).
+6. Only after 1–5 pass, consider flipping the default in
+   `WorkbookSnapshotService.InlineSnapshotEnabled`.
+
 ## Notes
 
 - `warpspeed_engine.dll` must sit beside the Excel add-in output because

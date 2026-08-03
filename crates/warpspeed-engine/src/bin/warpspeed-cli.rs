@@ -108,6 +108,7 @@ fn main() {
         locale: "en".to_string(),
         timezone: "UTC".to_string(),
         language: "en".to_string(),
+        inline_workbook: None,
     };
 
     let engine = WarpSpeedEngine::new();

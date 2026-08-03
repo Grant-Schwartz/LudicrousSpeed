@@ -11,6 +11,6 @@ pub use model::{
     AnalysisSummary, BenchmarkSummary, CalcMode, CalcPlan, CalcResult, CalculationStrategy,
     ChangedCell, DataTableBenchmarkSummary, DataTableDiagnostic, DataTableEvaluationStatus,
     EngineError, ExcelWritebackPlan, FallbackDetail, FallbackReason, FormulaCoverage,
-    FormulaValueKind, FormulaWritebackCell, WorkbookSnapshot, WritebackCellFailure,
-    WritebackIssueSummary, WritebackMode,
+    FormulaValueKind, FormulaWritebackCell, InlineCell, InlineDefinedName, InlineSheet,
+    InlineWorkbook, WorkbookSnapshot, WritebackCellFailure, WritebackIssueSummary, WritebackMode,
 };

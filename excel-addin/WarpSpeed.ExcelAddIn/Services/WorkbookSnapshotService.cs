@@ -19,6 +19,15 @@ namespace WarpSpeed.ExcelAddIn.Services
             this.changeTracker = changeTracker;
         }
 
+        /// <summary>
+        /// Opt-in only: set WARPSPEED_INLINE_SNAPSHOT=1 to try the in-memory
+        /// (no SaveCopyAs, no xlsx re-import) cold-load path instead of the
+        /// file-based one. Off by default until InMemoryWorkbookReader has
+        /// been verified against live Excel -- see its doc comment.
+        /// </summary>
+        private static bool InlineSnapshotEnabled =>
+            Environment.GetEnvironmentVariable("WARPSPEED_INLINE_SNAPSHOT") == "1";
+
         public WorkbookSnapshot Create(string mode, long? excelBaselineMs)
         {
             dynamic excel = ExcelDnaUtil.Application;
@@ -48,14 +57,32 @@ namespace WarpSpeed.ExcelAddIn.Services
             var needsSnapshot = forceReload || !changeSet.IsWarm;
             var tempPath = "";
             var snapshotSaveMs = 0L;
+            InlineWorkbook? inlineWorkbook = null;
             if (needsSnapshot)
             {
-                tempPath = Path.Combine(
-                    Path.GetTempPath(),
-                    $"warpspeed-{Guid.NewGuid():N}.xlsx");
-
                 var snapshotStopwatch = Stopwatch.StartNew();
-                SaveWorkbookCopy(workbook, tempPath);
+                if (InlineSnapshotEnabled)
+                {
+                    try
+                    {
+                        inlineWorkbook = InMemoryWorkbookReader.Read(workbook);
+                    }
+                    catch
+                    {
+                        // Fall back to the proven file-based path below for
+                        // any read failure (unsupported cell shape, COM
+                        // error, etc.) rather than failing the whole run.
+                        inlineWorkbook = null;
+                    }
+                }
+
+                if (inlineWorkbook == null)
+                {
+                    tempPath = Path.Combine(
+                        Path.GetTempPath(),
+                        $"warpspeed-{Guid.NewGuid():N}.xlsx");
+                    SaveWorkbookCopy(workbook, tempPath);
+                }
                 snapshotStopwatch.Stop();
                 snapshotSaveMs = snapshotStopwatch.ElapsedMilliseconds;
             }
@@ -73,6 +100,7 @@ namespace WarpSpeed.ExcelAddIn.Services
                 Locale = "en",
                 Timezone = "UTC",
                 Language = "en",
+                InlineWorkbook = inlineWorkbook,
                 SnapshotSaveMs = snapshotSaveMs,
                 SnapshotSkipped = !needsSnapshot,
                 SheetSignature = changeSet.SheetSignature,

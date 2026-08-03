@@ -41,6 +41,13 @@ pub struct WorkbookSnapshot {
     pub timezone: String,
     #[serde(default = "default_language")]
     pub language: String,
+    /// When present on a cache miss, the engine builds the workbook directly
+    /// from this in-memory snapshot instead of reading `workbook_path` from
+    /// disk, skipping the SaveCopyAs + xlsx re-import round trip entirely.
+    /// `workbook_id` must still be set so the result can be cached/reused by
+    /// warm runs the same way a file-backed snapshot is.
+    #[serde(default)]
+    pub inline_workbook: Option<InlineWorkbook>,
 }
 
 impl WorkbookSnapshot {
@@ -57,6 +64,39 @@ impl WorkbookSnapshot {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineWorkbook {
+    pub sheets: Vec<InlineSheet>,
+    #[serde(default)]
+    pub defined_names: Vec<InlineDefinedName>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineSheet {
+    pub name: String,
+    pub cells: Vec<InlineCell>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineCell {
+    pub row: i32,
+    pub column: i32,
+    /// Same convention as `ChangedCell::input`: formula text starting with
+    /// `=`, or the literal value text otherwise.
+    pub input: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineDefinedName {
+    pub name: String,
+    /// `None` for a workbook-scoped name; `Some(sheet name)` for a
+    /// sheet-scoped one. Resolved to an index against `sheets` when building
+    /// the model.
+    #[serde(default)]
+    pub scope_sheet_name: Option<String>,
+    pub formula: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

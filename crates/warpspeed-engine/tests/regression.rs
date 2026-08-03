@@ -7,8 +7,9 @@ use ironcalc::{
     export::save_to_xlsx,
 };
 use warpspeed_engine::{
-    CalcMode, ChangedCell, DataTableEvaluationStatus, FormulaValueKind, WarpSpeedEngine,
-    WorkbookSnapshot, WritebackMode,
+    CalcMode, ChangedCell, DataTableEvaluationStatus, FormulaValueKind, InlineCell,
+    InlineDefinedName, InlineSheet, InlineWorkbook, WarpSpeedEngine, WorkbookSnapshot,
+    WritebackMode,
 };
 use zip::{write::FileOptions, ZipArchive, ZipWriter};
 
@@ -74,6 +75,7 @@ fn rejects_missing_workbook_path() {
         locale: "en".to_string(),
         timezone: "UTC".to_string(),
         language: "en".to_string(),
+        inline_workbook: None,
     };
 
     let err = WarpSpeedEngine::new().run(&snapshot).unwrap_err();
@@ -234,6 +236,7 @@ fn snapshot_for(
         locale: "en".to_string(),
         timezone: "UTC".to_string(),
         language: "en".to_string(),
+        inline_workbook: None,
     }
 }
 
@@ -365,4 +368,147 @@ fn insert_data_table_formula(xml: &str, cell_address: &str, formula_tag: &str) -
         formula_tag,
         &xml[open_end..close_start]
     ) + &xml[close_start..]
+}
+
+fn inline_snapshot(
+    workbook_id: &str,
+    inline: InlineWorkbook,
+    mode: CalcMode,
+    changed_cells: Vec<ChangedCell>,
+) -> WorkbookSnapshot {
+    WorkbookSnapshot {
+        workbook_path: String::new(),
+        workbook_name: Some(workbook_id.to_string()),
+        workbook_id: Some(workbook_id.to_string()),
+        mode,
+        excel_baseline_ms: None,
+        force_reload: false,
+        changed_cells,
+        evaluate_data_tables: false,
+        locale: "en".to_string(),
+        timezone: "UTC".to_string(),
+        language: "en".to_string(),
+        inline_workbook: Some(inline),
+    }
+}
+
+#[test]
+fn builds_and_evaluates_a_workbook_from_inline_cells_without_any_file() {
+    let inline = InlineWorkbook {
+        sheets: vec![
+            InlineSheet {
+                name: "Assumptions".to_string(),
+                cells: vec![
+                    InlineCell { row: 1, column: 1, input: "10".to_string() },
+                    InlineCell { row: 2, column: 1, input: "5".to_string() },
+                ],
+            },
+            InlineSheet {
+                name: "Model".to_string(),
+                cells: vec![InlineCell {
+                    row: 1,
+                    column: 1,
+                    input: "=Assumptions!A1*Assumptions!A2".to_string(),
+                }],
+            },
+        ],
+        defined_names: vec![InlineDefinedName {
+            name: "Total".to_string(),
+            scope_sheet_name: None,
+            formula: "Model!$A$1".to_string(),
+        }],
+    };
+
+    let snapshot = inline_snapshot("inline-basic", inline, CalcMode::Recalculate, Vec::new());
+    let result = WarpSpeedEngine::new().run(&snapshot).unwrap();
+
+    assert_eq!(result.analysis.coverage.formula_cells, 1);
+    assert_eq!(result.analysis.coverage.fallback_formula_cells, 0);
+    assert!(result.analysis.ironcalc_can_evaluate);
+    assert_eq!(result.writeback.cells.len(), 1);
+    assert_eq!(result.writeback.cells[0].value, serde_json::json!(50.0));
+}
+
+#[test]
+fn inline_build_skips_bad_cells_as_fallbacks_instead_of_failing_entirely() {
+    let inline = InlineWorkbook {
+        sheets: vec![InlineSheet {
+            name: "Sheet1".to_string(),
+            cells: vec![
+                InlineCell { row: 1, column: 1, input: "10".to_string() },
+                // Row 0 is invalid (Excel/IronCalc are 1-indexed) -- exactly
+                // the shape of bug a COM bulk-read on the host side could
+                // introduce (an off-by-one row/column index). This must be
+                // recorded as a fallback and skipped, not abort the whole
+                // workbook build.
+                InlineCell { row: 0, column: 1, input: "5".to_string() },
+                InlineCell { row: 3, column: 1, input: "=A1+1".to_string() },
+            ],
+        }],
+        defined_names: Vec::new(),
+    };
+
+    let snapshot = inline_snapshot("inline-bad-cell", inline, CalcMode::Analyze, Vec::new());
+    let result = WarpSpeedEngine::new().run(&snapshot).unwrap();
+
+    // The bad cell is recorded as a fallback rather than aborting the build...
+    assert_eq!(result.analysis.coverage.fallback_formula_cells, 1);
+    assert!(result
+        .analysis
+        .fallback_reasons
+        .iter()
+        .any(|reason| reason.code == "unsupported_formula"));
+    // ...and the good formula cell (A3) still evaluates normally alongside it.
+    assert_eq!(result.analysis.coverage.formula_cells, 2);
+    assert_eq!(result.analysis.coverage.supported_formula_cells, 1);
+}
+
+#[test]
+fn inline_workbook_id_can_be_warmed_with_changed_cells_on_a_later_run() {
+    let inline = InlineWorkbook {
+        sheets: vec![InlineSheet {
+            name: "Sheet1".to_string(),
+            cells: vec![
+                InlineCell { row: 1, column: 1, input: "10".to_string() },
+                InlineCell { row: 1, column: 2, input: "=A1*2".to_string() },
+            ],
+        }],
+        defined_names: Vec::new(),
+    };
+
+    let cold_snapshot = inline_snapshot(
+        "inline-warm",
+        inline,
+        CalcMode::Recalculate,
+        Vec::new(),
+    );
+    let engine = WarpSpeedEngine::new();
+    let cold_result = engine.run(&cold_snapshot).unwrap();
+    assert_eq!(cold_result.writeback.cells[0].value, serde_json::json!(20.0));
+
+    // Warm run: no workbook_path and no inline_workbook, just the changed
+    // cell and the same workbook_id, exactly like a live-edit follow-up call.
+    let warm_snapshot = WorkbookSnapshot {
+        workbook_path: String::new(),
+        workbook_name: None,
+        workbook_id: Some("inline-warm".to_string()),
+        mode: CalcMode::Recalculate,
+        excel_baseline_ms: None,
+        force_reload: false,
+        changed_cells: vec![ChangedCell {
+            sheet_name: "Sheet1".to_string(),
+            row: 1,
+            column: 1,
+            address: "A1".to_string(),
+            input: "7".to_string(),
+            is_formula: false,
+        }],
+        evaluate_data_tables: false,
+        locale: "en".to_string(),
+        timezone: "UTC".to_string(),
+        language: "en".to_string(),
+        inline_workbook: None,
+    };
+    let warm_result = engine.run(&warm_snapshot).unwrap();
+    assert_eq!(warm_result.writeback.cells[0].value, serde_json::json!(14.0));
 }
