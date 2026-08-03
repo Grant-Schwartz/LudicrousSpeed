@@ -136,7 +136,7 @@ pub(crate) fn build_dependency_graph(model: &Model<'_>) -> DependencyGraph {
         };
 
         let mut dependencies = FormulaDependencies::default();
-        collect_node_dependencies(node, *cell, &mut dependencies);
+        collect_node_dependencies(model, node, *cell, &mut dependencies);
 
         if !dependencies.fallbacks.is_empty() {
             formula_has_fallback[dependent_node] = true;
@@ -345,7 +345,12 @@ fn formula_index_for_cell(model: &Model<'_>, sheet: u32, row: i32, column: i32) 
     worksheet.cell(row, column)?.get_formula()
 }
 
-fn collect_node_dependencies(node: &Node, context: CellId, dependencies: &mut FormulaDependencies) {
+fn collect_node_dependencies(
+    model: &Model<'_>,
+    node: &Node,
+    context: CellId,
+    dependencies: &mut FormulaDependencies,
+) {
     match node {
         Node::ReferenceKind {
             sheet_index,
@@ -395,8 +400,8 @@ fn collect_node_dependencies(node: &Node, context: CellId, dependencies: &mut Fo
         | Node::OpProductKind { left, right, .. }
         | Node::OpPowerKind { left, right }
         | Node::CompareKind { left, right, .. } => {
-            collect_node_dependencies(left, context, dependencies);
-            collect_node_dependencies(right, context, dependencies);
+            collect_node_dependencies(model, left, context, dependencies);
+            collect_node_dependencies(model, right, context, dependencies);
             if matches!(node, Node::OpRangeKind { .. }) {
                 dependencies.fallbacks.push(FormulaFallback {
                     code: "dynamic_reference",
@@ -422,12 +427,12 @@ fn collect_node_dependencies(node: &Node, context: CellId, dependencies: &mut Fo
                 _ => {}
             }
             for arg in args {
-                collect_node_dependencies(arg, context, dependencies);
+                collect_node_dependencies(model, arg, context, dependencies);
             }
         }
         Node::InvalidFunctionKind { name, args } if name.eq_ignore_ascii_case("sumproduct") => {
             for arg in args {
-                collect_node_dependencies(arg, context, dependencies);
+                collect_node_dependencies(model, arg, context, dependencies);
             }
         }
         Node::InvalidFunctionKind { name, args } => {
@@ -436,13 +441,12 @@ fn collect_node_dependencies(node: &Node, context: CellId, dependencies: &mut Fo
                 message: format!("Formula uses unsupported function {name}."),
             });
             for arg in args {
-                collect_node_dependencies(arg, context, dependencies);
+                collect_node_dependencies(model, arg, context, dependencies);
             }
         }
-        Node::DefinedNameKind((name, _, _)) => dependencies.fallbacks.push(FormulaFallback {
-            code: "unsupported_reference",
-            message: format!("Defined name {name} is treated as a graph boundary in V1."),
-        }),
+        Node::DefinedNameKind((name, scope, formula)) => {
+            collect_defined_name_dependencies(model, name, *scope, formula, context, dependencies);
+        }
         Node::TableNameKind(name) => dependencies.fallbacks.push(FormulaFallback {
             code: "unsupported_reference",
             message: format!("Table reference {name} is treated as a graph boundary in V1."),
@@ -452,7 +456,7 @@ fn collect_node_dependencies(node: &Node, context: CellId, dependencies: &mut Fo
             message: format!("Variable name {name} could not be resolved."),
         }),
         Node::ImplicitIntersection { child, .. } | Node::UnaryKind { right: child, .. } => {
-            collect_node_dependencies(child, context, dependencies);
+            collect_node_dependencies(model, child, context, dependencies);
         }
         Node::ParseErrorKind { message, .. } => dependencies.fallbacks.push(FormulaFallback {
             code: "unsupported_formula",
@@ -467,12 +471,158 @@ fn collect_node_dependencies(node: &Node, context: CellId, dependencies: &mut Fo
     }
 }
 
+fn collect_defined_name_dependencies(
+    model: &Model<'_>,
+    name: &str,
+    scope: Option<u32>,
+    formula: &str,
+    context: CellId,
+    dependencies: &mut FormulaDependencies,
+) {
+    let reference = formula.trim().trim_start_matches('=').trim();
+    if reference.is_empty() || reference.starts_with('#') {
+        dependencies.fallbacks.push(FormulaFallback {
+            code: "unsupported_reference",
+            message: format!("Defined name {name} points to an invalid or empty reference."),
+        });
+        return;
+    }
+
+    if reference.parse::<f64>().is_ok()
+        || reference.eq_ignore_ascii_case("TRUE")
+        || reference.eq_ignore_ascii_case("FALSE")
+        || (reference.starts_with('"') && reference.ends_with('"'))
+    {
+        return;
+    }
+
+    let default_sheet = scope
+        .or(Some(context.sheet))
+        .and_then(|sheet| model.workbook.worksheet(sheet).ok())
+        .map(|worksheet| worksheet.name.as_str())
+        .unwrap_or_default();
+
+    if let Some(cell) = cell_id_from_a1_reference(model, reference, default_sheet) {
+        dependencies.cells.push(cell);
+        return;
+    }
+
+    if let Some(range) = range_ref_from_a1_reference(model, reference, default_sheet) {
+        dependencies.ranges.push(range);
+        return;
+    }
+
+    dependencies.fallbacks.push(FormulaFallback {
+        code: "unsupported_reference",
+        message: format!(
+            "Defined name {name} uses a formula or reference shape WarpSpeed cannot graph yet."
+        ),
+    });
+}
+
 fn absolute_coord(value: i32, context: i32, is_absolute: bool) -> i32 {
     if is_absolute {
         value
     } else {
         value + context
     }
+}
+
+fn cell_id_from_a1_reference(
+    model: &Model<'_>,
+    reference: &str,
+    default_sheet: &str,
+) -> Option<CellId> {
+    let (sheet_name, row, column) = parse_a1_cell(reference, default_sheet)?;
+    Some(CellId::new(
+        sheet_index_by_name(model, &sheet_name)?,
+        row,
+        column,
+    ))
+}
+
+fn range_ref_from_a1_reference(
+    model: &Model<'_>,
+    reference: &str,
+    default_sheet: &str,
+) -> Option<RangeRef> {
+    let cleaned = reference.trim();
+    let mut parts = cleaned.split(':');
+    let left = parts.next()?;
+    let right = parts.next().unwrap_or(left);
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let (left_sheet, start_row, start_column) = parse_a1_cell(left, default_sheet)?;
+    let (right_sheet, end_row, end_column) = parse_a1_cell(right, &left_sheet)?;
+    if !left_sheet.eq_ignore_ascii_case(&right_sheet) {
+        return None;
+    }
+
+    Some(RangeRef {
+        sheet: sheet_index_by_name(model, &left_sheet)?,
+        start_row: start_row.min(end_row),
+        start_column: start_column.min(end_column),
+        end_row: start_row.max(end_row),
+        end_column: start_column.max(end_column),
+    })
+}
+
+fn parse_a1_cell(reference: &str, default_sheet: &str) -> Option<(String, i32, i32)> {
+    let cleaned = reference.trim().replace('$', "");
+    let (sheet_name, cell_address) = match cleaned.rsplit_once('!') {
+        Some((sheet, cell)) => (unquote_sheet_name(sheet), cell),
+        None => (default_sheet.to_string(), cleaned.as_str()),
+    };
+
+    let mut column_name = String::new();
+    let mut row_name = String::new();
+    for ch in cell_address.chars() {
+        if ch.is_ascii_alphabetic() && row_name.is_empty() {
+            column_name.push(ch.to_ascii_uppercase());
+        } else if ch.is_ascii_digit() {
+            row_name.push(ch);
+        } else {
+            return None;
+        }
+    }
+
+    if column_name.is_empty() || row_name.is_empty() {
+        return None;
+    }
+
+    Some((
+        sheet_name,
+        row_name.parse().ok()?,
+        column_name_to_number(&column_name)?,
+    ))
+}
+
+fn column_name_to_number(column_name: &str) -> Option<i32> {
+    let mut column = 0_i32;
+    for ch in column_name.chars() {
+        if !ch.is_ascii_alphabetic() {
+            return None;
+        }
+        column = column
+            .checked_mul(26)?
+            .checked_add(ch.to_ascii_uppercase() as i32 - 'A' as i32 + 1)?;
+    }
+    Some(column)
+}
+
+fn unquote_sheet_name(sheet_name: &str) -> String {
+    sheet_name.trim().trim_matches('\'').replace("''", "'")
+}
+
+fn sheet_index_by_name(model: &Model<'_>, name: &str) -> Option<u32> {
+    model
+        .workbook
+        .worksheets
+        .iter()
+        .position(|worksheet| worksheet.name.eq_ignore_ascii_case(name))
+        .map(|index| index as u32)
 }
 
 fn structure_hash(model: &Model<'_>, formula_entries: &[(CellId, i32)]) -> String {
@@ -691,6 +841,52 @@ mod tests {
         assert_eq!(
             graph
                 .dirty_summary(&[CellId::new(0, 1, 1)])
+                .dirty_formula_cells,
+            1
+        );
+    }
+
+    #[test]
+    fn extracts_dependencies_through_workbook_defined_names() {
+        let mut model = Model::new_empty("defined-name", "en", "UTC", "en").unwrap();
+        model.add_sheet("Debt").unwrap();
+        model
+            .new_defined_name("DebtBalance", None, "Debt!$C$5")
+            .unwrap();
+        model.set_user_input(1, 5, 3, "10".to_string()).unwrap();
+        model
+            .set_user_input(0, 1, 1, "=DebtBalance*2".to_string())
+            .unwrap();
+
+        let graph = build_dependency_graph(&model);
+        assert_eq!(graph.coverage().fallback_formula_cells, 0);
+        assert_eq!(
+            graph
+                .dirty_summary(&[CellId::new(1, 5, 3)])
+                .dirty_formula_cells,
+            1
+        );
+    }
+
+    #[test]
+    fn extracts_dependencies_through_sheet_scoped_range_names() {
+        let mut model = Model::new_empty("scoped-name", "en", "UTC", "en").unwrap();
+        model.add_sheet("Debt").unwrap();
+        model
+            .new_defined_name("DebtRows", Some(1), "Debt!$A$1:$A$3")
+            .unwrap();
+        model.set_user_input(1, 1, 1, "10".to_string()).unwrap();
+        model.set_user_input(1, 2, 1, "20".to_string()).unwrap();
+        model.set_user_input(1, 3, 1, "30".to_string()).unwrap();
+        model
+            .set_user_input(1, 1, 2, "=SUM(DebtRows)".to_string())
+            .unwrap();
+
+        let graph = build_dependency_graph(&model);
+        assert_eq!(graph.coverage().fallback_formula_cells, 0);
+        assert_eq!(
+            graph
+                .dirty_summary(&[CellId::new(1, 2, 1)])
                 .dirty_formula_cells,
             1
         );
