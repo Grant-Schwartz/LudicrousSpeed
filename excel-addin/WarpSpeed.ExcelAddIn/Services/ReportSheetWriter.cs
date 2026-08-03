@@ -42,11 +42,11 @@ namespace WarpSpeed.ExcelAddIn.Services
             sheet.Range["A8"].Value2 = "Fallback cells";
             sheet.Range["B8"].Value2 = result.Analysis.Coverage.FallbackFormulaCells;
             sheet.Range["A10"].Value2 = "Excel baseline ms";
-            sheet.Range["B10"].Value2 = hostMetrics.ExcelBaselineMs;
+            WriteValue(sheet, "B10", hostMetrics.ExcelBaselineMs);
             sheet.Range["A11"].Value2 = "WarpSpeed end-to-end ms";
             sheet.Range["B11"].Value2 = hostMetrics.WarpSpeedEndToEndMs;
             sheet.Range["A12"].Value2 = "End-to-end speedup vs Excel";
-            sheet.Range["B12"].Value2 = hostMetrics.EndToEndSpeedupVsExcel;
+            WriteValue(sheet, "B12", hostMetrics.EndToEndSpeedupVsExcel);
             sheet.Range["A13"].Value2 = "Snapshot save ms";
             sheet.Range["B13"].Value2 = hostMetrics.SnapshotSaveMs;
             sheet.Range["A14"].Value2 = "Snapshot skipped";
@@ -56,7 +56,7 @@ namespace WarpSpeed.ExcelAddIn.Services
             sheet.Range["A16"].Value2 = "Rust total ms";
             sheet.Range["B16"].Value2 = result.Benchmark.TotalWarpSpeedMs;
             sheet.Range["A17"].Value2 = "Rust speedup vs Excel";
-            sheet.Range["B17"].Value2 = result.Benchmark.SpeedupVsExcel;
+            WriteValue(sheet, "B17", result.Benchmark.SpeedupVsExcel);
             sheet.Range["A18"].Value2 = "IronCalc evaluate ms";
             sheet.Range["B18"].Value2 = result.Benchmark.IronCalcMs;
             sheet.Range["A19"].Value2 = "Rust load ms";
@@ -122,10 +122,10 @@ namespace WarpSpeed.ExcelAddIn.Services
                     row++;
                     sheet.Range[$"A{row}"].Value2 = diagnostic.Code;
                     sheet.Range[$"B{row}"].Value2 = diagnostic.TableId;
-                    sheet.Range[$"C{row}"].Value2 = diagnostic.FormulaCell;
+                    WriteValue(sheet, $"C{row}", diagnostic.FormulaCell);
                     sheet.Range[$"D{row}"].Value2 = diagnostic.AffectedCells;
                     sheet.Range[$"E{row}"].Value2 = diagnostic.Message;
-                    sheet.Range[$"F{row}"].Value2 = diagnostic.Formula;
+                    WriteValue(sheet, $"F{row}", diagnostic.Formula);
                 }
 
                 if (result.Benchmark.DataTables.Diagnostics.Count > dataTableSampleCount)
@@ -153,10 +153,10 @@ namespace WarpSpeed.ExcelAddIn.Services
             sheet.Range[$"B{row}"].Value2 = hostMetrics.WritebackMs;
             row++;
             sheet.Range[$"A{row}"].Value2 = "Calc mode before writeback";
-            sheet.Range[$"B{row}"].Value2 = hostMetrics.CalculationModeBeforeWriteback;
+            WriteValue(sheet, $"B{row}", hostMetrics.CalculationModeBeforeWriteback);
             row++;
             sheet.Range[$"A{row}"].Value2 = "Calc mode after writeback";
-            sheet.Range[$"B{row}"].Value2 = hostMetrics.CalculationModeAfterWriteback;
+            WriteValue(sheet, $"B{row}", hostMetrics.CalculationModeAfterWriteback);
             row++;
             sheet.Range[$"A{row}"].Value2 = "Candidate cells";
             sheet.Range[$"B{row}"].Value2 = result.Writeback.Cells.Count;
@@ -242,7 +242,7 @@ namespace WarpSpeed.ExcelAddIn.Services
                 var reason = result.Analysis.FallbackReasons[index];
                 row++;
                 sheet.Range[$"A{row}"].Value2 = reason.Code;
-                sheet.Range[$"B{row}"].Value2 = reason.Location;
+                WriteValue(sheet, $"B{row}", reason.Location);
                 sheet.Range[$"C{row}"].Value2 = reason.Message;
             }
 
@@ -286,6 +286,11 @@ namespace WarpSpeed.ExcelAddIn.Services
                     : string.Compare(left.Key, right.Key, StringComparison.Ordinal);
             });
             return items;
+        }
+
+        private static void WriteValue(dynamic sheet, string address, object? value)
+        {
+            sheet.Range[address].Value2 = value ?? "";
         }
 
         private static dynamic EnsureReportSheet(dynamic workbook)
