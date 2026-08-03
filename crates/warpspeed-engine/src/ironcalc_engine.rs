@@ -14,8 +14,8 @@ use crate::graph::{build_dependency_graph, CellId, DependencyGraph, DirtySummary
 use crate::model::{
     AnalysisSummary, BenchmarkSummary, CalcMode, CalcPlan, CalcResult, CalculationStrategy,
     ChangedCell, DataTableBenchmarkSummary, DataTableEvaluationStatus, EngineError,
-    ExcelWritebackPlan, FallbackReason, FormulaCoverage, FormulaValueKind, FormulaWritebackCell,
-    WorkbookSnapshot, WritebackIssueSummary, WritebackMode,
+    ExcelWritebackPlan, FallbackDetail, FallbackReason, FormulaCoverage, FormulaValueKind,
+    FormulaWritebackCell, WorkbookSnapshot, WritebackIssueSummary, WritebackMode,
 };
 use crate::xlsx_sanitize::{
     remove_sanitized_workbook, sanitize_data_table_formulas, ImportFallbacks,
@@ -80,14 +80,18 @@ impl CalcEngine for IronCalcEngine {
                         }
                         result.plan.mode = snapshot.mode;
                         result.plan.workbook_hash = entry.workbook_hash.clone();
-                        result.plan.fallback_reasons =
-                            merged_fallback_reasons(&entry.graph, &entry.import_fallbacks);
+                        result.plan.fallback_reasons = merged_fallback_reasons(
+                            &entry.graph,
+                            &entry.import_fallbacks,
+                            &data_tables,
+                        );
                         result.writeback = build_writeback_plan(
                             snapshot,
                             &entry.model,
                             &entry.graph,
                             &entry.import_fallbacks,
                             &entry.data_tables,
+                            &data_tables,
                         );
                         result.benchmark = benchmark_summary(
                             snapshot,
@@ -477,7 +481,8 @@ fn build_result(
     started: Instant,
     timing: TimingBreakdown,
 ) -> CalcResult {
-    let fallback_reasons = merged_fallback_reasons(graph, import_fallbacks);
+    let data_table_summary = timing.data_tables.clone();
+    let fallback_reasons = merged_fallback_reasons(graph, import_fallbacks, &data_table_summary);
     plan.workbook_hash = workbook_hash.to_string();
     plan.mode = snapshot.mode;
     plan.fallback_reasons = fallback_reasons.clone();
@@ -487,12 +492,19 @@ fn build_result(
         analysis: AnalysisSummary {
             workbook_name: snapshot.workbook_name.clone(),
             ironcalc_can_evaluate: fallback_reasons.is_empty(),
-            coverage: coverage_with_import_fallbacks(graph, import_fallbacks),
+            coverage: coverage_with_import_fallbacks(graph, import_fallbacks, &data_table_summary),
             fallback_reasons,
             fallback_details: merged_fallback_details(graph, import_fallbacks),
         },
         benchmark: benchmark_summary(snapshot, started, timing),
-        writeback: build_writeback_plan(snapshot, model, graph, import_fallbacks, data_tables),
+        writeback: build_writeback_plan(
+            snapshot,
+            model,
+            graph,
+            import_fallbacks,
+            data_tables,
+            &data_table_summary,
+        ),
     }
 }
 
@@ -502,15 +514,17 @@ fn build_writeback_plan(
     graph: &DependencyGraph,
     import_fallbacks: &ImportFallbacks,
     data_tables: &[DataTableRegion],
+    data_table_summary: &DataTableBenchmarkSummary,
 ) -> ExcelWritebackPlan {
     let mut notes = vec![
         "Formulas are preserved; the Excel host must pass a live formula-cache probe before applying returned values.".to_string(),
         "Excel remains the correctness authority for unsupported formulas and restore/rebuild behavior.".to_string(),
     ];
 
-    let fallback_reasons = merged_fallback_reasons(graph, import_fallbacks);
+    let fallback_reasons = merged_fallback_reasons(graph, import_fallbacks, data_table_summary);
     if !fallback_reasons.is_empty() {
-        let skipped = coverage_with_import_fallbacks(graph, import_fallbacks).formula_cells;
+        let skipped = coverage_with_import_fallbacks(graph, import_fallbacks, data_table_summary)
+            .fallback_formula_cells;
         let skipped_reasons = vec![WritebackIssueSummary {
             code: "fallback_regions_present".to_string(),
             count: skipped,
@@ -834,8 +848,13 @@ fn load_model_with_import_fallbacks(
 fn merged_fallback_reasons(
     graph: &DependencyGraph,
     import_fallbacks: &ImportFallbacks,
+    data_table_summary: &DataTableBenchmarkSummary,
 ) -> Vec<FallbackReason> {
-    let mut fallback_reasons = import_fallbacks.fallback_reasons.clone();
+    let mut fallback_reasons = if data_table_fallbacks_are_validated(data_table_summary) {
+        Vec::new()
+    } else {
+        import_fallbacks.fallback_reasons.clone()
+    };
     fallback_reasons.extend(graph.fallback_reasons());
     fallback_reasons
 }
@@ -843,7 +862,7 @@ fn merged_fallback_reasons(
 fn merged_fallback_details(
     graph: &DependencyGraph,
     import_fallbacks: &ImportFallbacks,
-) -> Vec<crate::model::FallbackDetail> {
+) -> Vec<FallbackDetail> {
     let mut fallback_details = import_fallbacks.fallback_details.clone();
     fallback_details.extend(graph.fallback_details());
     fallback_details
@@ -852,11 +871,22 @@ fn merged_fallback_details(
 fn coverage_with_import_fallbacks(
     graph: &DependencyGraph,
     import_fallbacks: &ImportFallbacks,
+    data_table_summary: &DataTableBenchmarkSummary,
 ) -> FormulaCoverage {
     let mut coverage = graph.coverage();
     coverage.formula_cells += import_fallbacks.fallback_formula_cells;
-    coverage.fallback_formula_cells += import_fallbacks.fallback_formula_cells;
+    if !data_table_fallbacks_are_validated(data_table_summary) {
+        coverage.fallback_formula_cells += import_fallbacks.fallback_formula_cells;
+    }
     coverage
+}
+
+fn data_table_fallbacks_are_validated(data_table_summary: &DataTableBenchmarkSummary) -> bool {
+    data_table_summary.data_table_count > 0
+        && data_table_summary.status == DataTableEvaluationStatus::Validated
+        && data_table_summary.data_table_cells == data_table_summary.validated_data_table_cells
+        && data_table_summary.mismatched_data_table_cells == 0
+        && data_table_summary.unsupported_data_table_cells == 0
 }
 
 fn cache_hit_rate(graph: &DependencyGraph, dirty: DirtySummary) -> f64 {

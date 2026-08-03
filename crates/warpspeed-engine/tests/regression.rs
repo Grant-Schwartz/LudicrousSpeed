@@ -107,31 +107,36 @@ fn validates_openxml_data_table_in_parallel_mode() {
     );
     assert_eq!(result.benchmark.data_tables.validated_data_table_cells, 4);
     assert_eq!(result.benchmark.data_tables.mismatched_data_table_cells, 0);
-    assert!(result
+    assert!(!result
         .analysis
         .fallback_reasons
         .iter()
         .any(|reason| reason.code == "data_table_formula"));
+    assert_eq!(result.analysis.coverage.fallback_formula_cells, 0);
     assert_eq!(result.writeback.mode, WritebackMode::None);
     assert_eq!(result.writeback.value_cells_to_update, 0);
 }
 
 #[test]
-fn skips_formula_writeback_when_fallback_regions_are_present() {
+fn allows_formula_writeback_candidates_when_data_tables_validate() {
     let fixture = create_data_table_fixture();
     let mut snapshot = snapshot_for(&fixture, CalcMode::Recalculate, None);
     snapshot.evaluate_data_tables = true;
 
     let result = WarpSpeedEngine::new().run(&snapshot).unwrap();
 
-    assert!(result
+    assert_eq!(
+        result.benchmark.data_tables.status,
+        DataTableEvaluationStatus::Validated
+    );
+    assert!(!result
         .analysis
         .fallback_reasons
         .iter()
         .any(|reason| reason.code == "data_table_formula"));
-    assert_eq!(result.writeback.mode, WritebackMode::None);
-    assert_eq!(result.writeback.value_cells_to_update, 0);
-    assert!(result
+    assert_eq!(result.writeback.mode, WritebackMode::LiveFormulaCache);
+    assert!(result.writeback.value_cells_to_update > 0);
+    assert!(!result
         .writeback
         .skipped_reasons
         .iter()

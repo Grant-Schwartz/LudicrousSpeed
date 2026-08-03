@@ -69,7 +69,7 @@ namespace WarpSpeed.ExcelAddIn.Services
                 ExcelBaselineMs = excelBaselineMs,
                 ForceReload = forceReload,
                 ChangedCells = changedCells,
-                EvaluateDataTables = false,
+                EvaluateDataTables = true,
                 Locale = "en",
                 Timezone = "UTC",
                 Language = "en",
