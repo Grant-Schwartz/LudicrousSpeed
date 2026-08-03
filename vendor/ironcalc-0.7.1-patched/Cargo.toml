@@ -1,0 +1,41 @@
+[package]
+edition = "2021"
+name = "ironcalc"
+version = "0.7.1"
+authors = ["Nicolás Hatcher <nicolas@theuniverse.today>"]
+description = "The democratization of spreadsheets"
+homepage = "https://www.ironcalc.com"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ironcalc/ironcalc/"
+
+[lib]
+name = "ironcalc"
+path = "src/lib.rs"
+
+[dependencies.bitcode]
+version = "0.6.8"
+
+[dependencies.chrono]
+version = "0.4"
+
+[dependencies.ironcalc_base]
+version = "0.7"
+
+[dependencies.itertools]
+version = "0.12"
+
+[dependencies.roxmltree]
+version = "0.19"
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1.0"
+
+[dependencies.thiserror]
+version = "1.0"
+
+[dependencies.zip]
+version = "0.6"
