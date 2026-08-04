@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using ExcelDna.Integration;
 using Excel = Microsoft.Office.Interop.Excel;
@@ -34,6 +35,7 @@ namespace WarpSpeed.ExcelAddIn.Services
                 Excel.Range cell = (Excel.Range)sheet.Range["A1"];
 
                 const double injectedValue = 12345.6789;
+                var diagnostics = new List<string>();
 
                 // NOT YET VERIFIED AGAINST LIVE EXCEL: xlSet is documented in
                 // the XLL C API SDK as, on a worksheet cell (as opposed to a
@@ -49,13 +51,13 @@ namespace WarpSpeed.ExcelAddIn.Services
                 // authored it (no Windows/Excel available there). See
                 // docs/windows-testing.md for the acceptance checklist
                 // before trusting this.
-                var xlSetResult = TryXlSet(scratchWorkbook, sheet.Name, cell, injectedValue);
+                var xlSetResult = TryXlSet(scratchWorkbook, sheet.Name, cell, injectedValue, diagnostics);
                 if (xlSetResult != null)
                 {
                     return xlSetResult;
                 }
 
-                var comValue2Result = TryComValue2(cell, injectedValue);
+                var comValue2Result = TryComValue2(cell, injectedValue, diagnostics);
                 if (comValue2Result != null)
                 {
                     return comValue2Result;
@@ -64,7 +66,8 @@ namespace WarpSpeed.ExcelAddIn.Services
                 return LiveFormulaCacheProbeResult.Unsupported(
                     "No supported live formula-cache setter is available. Neither xlSet nor COM "
                         + "Value2 satisfied the contract of updating only the cached result while "
-                        + "preserving the formula.");
+                        + "preserving the formula. Details: "
+                        + string.Join(" | ", diagnostics));
             }
             catch (Exception ex)
             {
@@ -105,22 +108,39 @@ namespace WarpSpeed.ExcelAddIn.Services
             Excel.Workbook workbook,
             string sheetName,
             Excel.Range cell,
-            double injectedValue)
+            double injectedValue,
+            List<string> diagnostics)
         {
             try
             {
                 cell.Formula = "=1+1";
                 var formulaBefore = Convert.ToString(cell.Formula, CultureInfo.InvariantCulture) ?? "";
 
-                var reference = BuildReference(workbook, sheetName, cell.Row, cell.Column);
+                var reference = BuildReference(workbook, sheetName, cell.Row, cell.Column, diagnostics);
                 if (reference == null)
                 {
+                    // BuildReference already recorded why.
                     return null;
                 }
 
-                var setResult = XlCall.Excel(XlCall.xlSet, reference, injectedValue);
-                if (setResult is ExcelError)
+                object setResult;
+                try
                 {
+                    setResult = XlCall.Excel(XlCall.xlSet, reference, injectedValue);
+                }
+                catch (Exception ex)
+                {
+                    diagnostics.Add(
+                        $"xlSet: XlCall.Excel(xlSet, ...) threw {ex.GetType().Name}: {ex.Message}. "
+                        + "This usually means xlSet was called outside a valid XLL macro/function "
+                        + "execution context (e.g. from a ribbon callback rather than a UDF or "
+                        + "QueueAsMacro-scheduled call).");
+                    return null;
+                }
+
+                if (setResult is ExcelError excelError)
+                {
+                    diagnostics.Add($"xlSet: XlCall.Excel(xlSet, ...) returned ExcelError {excelError}.");
                     return null;
                 }
 
@@ -128,6 +148,11 @@ namespace WarpSpeed.ExcelAddIn.Services
                 var valueAfter = cell.Value2;
                 var formulaPreserved = string.Equals(formulaBefore, formulaAfter, StringComparison.Ordinal);
                 var valueInjected = IsSameNumber(valueAfter, injectedValue);
+
+                diagnostics.Add(
+                    $"xlSet: call returned normally. formulaBefore=\"{formulaBefore}\" "
+                    + $"formulaAfter=\"{formulaAfter}\" valueAfter={valueAfter} "
+                    + $"formulaPreserved={formulaPreserved} valueInjected={valueInjected}");
 
                 if (formulaPreserved && valueInjected)
                 {
@@ -138,17 +163,17 @@ namespace WarpSpeed.ExcelAddIn.Services
 
                 return null;
             }
-            catch
+            catch (Exception ex)
             {
-                // xlSet is only valid to call from certain Excel-DNA
-                // execution contexts; a failure here just means this
-                // mechanism isn't usable right now, not that the probe
-                // itself failed.
+                diagnostics.Add($"xlSet: unexpected exception {ex.GetType().Name}: {ex.Message}");
                 return null;
             }
         }
 
-        private static LiveFormulaCacheProbeResult? TryComValue2(Excel.Range cell, double injectedValue)
+        private static LiveFormulaCacheProbeResult? TryComValue2(
+            Excel.Range cell,
+            double injectedValue,
+            List<string> diagnostics)
         {
             cell.Formula = "=1+1";
             var formulaBefore = Convert.ToString(cell.Formula, CultureInfo.InvariantCulture) ?? "";
@@ -159,6 +184,10 @@ namespace WarpSpeed.ExcelAddIn.Services
             var valueAfter = cell.Value2;
             var formulaPreserved = string.Equals(formulaBefore, formulaAfter, StringComparison.Ordinal);
             var valueInjected = IsSameNumber(valueAfter, injectedValue);
+
+            diagnostics.Add(
+                $"com_value2: formulaBefore=\"{formulaBefore}\" formulaAfter=\"{formulaAfter}\" "
+                + $"valueAfter={valueAfter} formulaPreserved={formulaPreserved} valueInjected={valueInjected}");
 
             if (formulaPreserved && valueInjected)
             {
@@ -176,24 +205,37 @@ namespace WarpSpeed.ExcelAddIn.Services
         /// ("[Book2]Sheet1") so the lookup can't resolve to a
         /// same-named sheet in a different open workbook.
         /// </summary>
-        internal static ExcelReference? BuildReference(Excel.Workbook workbook, string sheetName, int row, int column)
+        internal static ExcelReference? BuildReference(
+            Excel.Workbook workbook,
+            string sheetName,
+            int row,
+            int column,
+            List<string>? diagnostics = null)
         {
+            var qualifiedSheetName = $"[{workbook.Name}]{sheetName}";
+            object sheetId;
             try
             {
-                var qualifiedSheetName = $"[{workbook.Name}]{sheetName}";
-                var sheetId = XlCall.Excel(XlCall.xlSheetId, qualifiedSheetName);
-                if (sheetId is not IntPtr sheetIdValue)
-                {
-                    return null;
-                }
-
-                // The XLL C API is zero-indexed; COM's Row/Column are one-indexed.
-                return new ExcelReference(row - 1, row - 1, column - 1, column - 1, sheetIdValue);
+                sheetId = XlCall.Excel(XlCall.xlSheetId, qualifiedSheetName);
             }
-            catch
+            catch (Exception ex)
             {
+                diagnostics?.Add(
+                    $"xlSet: XlCall.Excel(xlSheetId, \"{qualifiedSheetName}\") threw "
+                    + $"{ex.GetType().Name}: {ex.Message}.");
                 return null;
             }
+
+            if (sheetId is not IntPtr sheetIdValue)
+            {
+                diagnostics?.Add(
+                    $"xlSet: XlCall.Excel(xlSheetId, \"{qualifiedSheetName}\") returned "
+                    + $"{sheetId?.GetType().Name ?? "null"} ({sheetId}) instead of an IntPtr sheet id.");
+                return null;
+            }
+
+            // The XLL C API is zero-indexed; COM's Row/Column are one-indexed.
+            return new ExcelReference(row - 1, row - 1, column - 1, column - 1, sheetIdValue);
         }
 
         private static bool IsSameNumber(object value, double expected)
