@@ -213,10 +213,10 @@ namespace WarpSpeed.ExcelAddIn.Services
             List<string>? diagnostics = null)
         {
             var qualifiedSheetName = $"[{workbook.Name}]{sheetName}";
-            object sheetId;
+            object sheetIdResult;
             try
             {
-                sheetId = XlCall.Excel(XlCall.xlSheetId, qualifiedSheetName);
+                sheetIdResult = XlCall.Excel(XlCall.xlSheetId, qualifiedSheetName);
             }
             catch (Exception ex)
             {
@@ -226,16 +226,20 @@ namespace WarpSpeed.ExcelAddIn.Services
                 return null;
             }
 
-            if (sheetId is not IntPtr sheetIdValue)
+            // xlSheetId returns a whole-sheet ExcelReference wrapping the
+            // sheet id, not a raw IntPtr -- SheetId is pulled off of it to
+            // build a reference to the actual target cell below.
+            if (sheetIdResult is not ExcelReference sheetReference)
             {
                 diagnostics?.Add(
                     $"xlSet: XlCall.Excel(xlSheetId, \"{qualifiedSheetName}\") returned "
-                    + $"{sheetId?.GetType().Name ?? "null"} ({sheetId}) instead of an IntPtr sheet id.");
+                    + $"{sheetIdResult?.GetType().Name ?? "null"} ({sheetIdResult}) instead of an "
+                    + "ExcelReference.");
                 return null;
             }
 
             // The XLL C API is zero-indexed; COM's Row/Column are one-indexed.
-            return new ExcelReference(row - 1, row - 1, column - 1, column - 1, sheetIdValue);
+            return new ExcelReference(row - 1, row - 1, column - 1, column - 1, sheetReference.SheetId);
         }
 
         private static bool IsSameNumber(object value, double expected)
