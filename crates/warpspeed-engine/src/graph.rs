@@ -294,6 +294,31 @@ impl DependencyGraph {
             .filter_map(|(index, cell)| (!self.formula_has_fallback[index]).then_some(cell))
     }
 
+    /// Formula cells safe to write a value back into: not themselves a
+    /// fallback, *and* not transitively downstream of any fallback cell
+    /// (directly or through a range like `SUM(A1:A10)`). `supported_formula_cells`
+    /// alone isn't enough for this -- a cell can use only supported
+    /// constructs and still be built on a value IronCalc couldn't actually
+    /// trust, if one of its precedents is unsupported. This deliberately
+    /// stays workbook-region-scoped rather than all-or-nothing: one fallback
+    /// region shouldn't block writeback for every other, unrelated region in
+    /// the same workbook.
+    pub(crate) fn writeback_safe_formula_cells(&self) -> impl Iterator<Item = CellId> + '_ {
+        let fallback_cells = self
+            .formula_cells
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(index, cell)| self.formula_has_fallback[index].then_some(cell))
+            .collect::<Vec<_>>();
+        let tainted = self.dirty_nodes(&fallback_cells);
+        self.formula_cells
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(move |(index, cell)| (!tainted[index]).then_some(cell))
+    }
+
     pub(crate) fn circular_formula_cells(&self) -> impl Iterator<Item = CellId> + '_ {
         self.circular_sccs
             .iter()
@@ -1255,6 +1280,42 @@ mod tests {
         assert!(details
             .iter()
             .any(|detail| detail.formula.as_deref() == Some("=A1")));
+    }
+
+    #[test]
+    fn writeback_safe_cells_exclude_fallback_cells_and_everything_downstream() {
+        let mut model = Model::new_empty("writeback-taint", "en", "UTC", "en").unwrap();
+        model.set_user_input(0, 1, 1, "10".to_string()).unwrap();
+        // A2: clean, unrelated to the fallback -- should stay writeback-safe.
+        model.set_user_input(0, 2, 1, "=A1*2".to_string()).unwrap();
+        // B1: a fallback cell (dynamic reference).
+        model
+            .set_user_input(0, 1, 2, "=INDIRECT(\"A1\")".to_string())
+            .unwrap();
+        // B2: directly references the fallback cell B1.
+        model.set_user_input(0, 2, 2, "=B1+1".to_string()).unwrap();
+        // C1: sums a range containing B1 -- taint must propagate through
+        // range dependencies too, not just direct cell references.
+        model.set_user_input(0, 1, 3, "=SUM(B1:B2)".to_string()).unwrap();
+
+        let graph = build_dependency_graph(&model);
+        let safe = graph
+            .writeback_safe_formula_cells()
+            .collect::<std::collections::HashSet<_>>();
+
+        assert!(safe.contains(&CellId::new(0, 2, 1)), "A2 should be writeback-safe");
+        assert!(
+            !safe.contains(&CellId::new(0, 1, 2)),
+            "B1 is itself a fallback and must not be writeback-safe"
+        );
+        assert!(
+            !safe.contains(&CellId::new(0, 2, 2)),
+            "B2 directly references fallback cell B1 and must not be writeback-safe"
+        );
+        assert!(
+            !safe.contains(&CellId::new(0, 1, 3)),
+            "C1 sums a range containing fallback cell B1 and must not be writeback-safe"
+        );
     }
 
     #[test]

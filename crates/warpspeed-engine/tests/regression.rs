@@ -187,6 +187,55 @@ fn resolves_data_table_fallback_per_table_not_workbook_wide() {
 }
 
 #[test]
+fn writeback_includes_unaffected_cells_when_other_regions_have_fallbacks() {
+    let inline = InlineWorkbook {
+        sheets: vec![InlineSheet {
+            name: "Sheet1".to_string(),
+            cells: vec![
+                InlineCell { row: 1, column: 1, input: "10".to_string() }, // A1
+                InlineCell { row: 2, column: 1, input: "=A1*2".to_string() }, // A2, clean, unrelated
+                InlineCell { row: 1, column: 2, input: "=INDIRECT(\"A1\")".to_string() }, // B1, fallback
+                InlineCell { row: 1, column: 3, input: "=B1+1".to_string() }, // C1, downstream of B1
+            ],
+        }],
+        defined_names: Vec::new(),
+    };
+
+    let snapshot = inline_snapshot(
+        "writeback-partial",
+        inline,
+        CalcMode::Recalculate,
+        Vec::new(),
+    );
+    let result = WarpSpeedEngine::new().run(&snapshot).unwrap();
+
+    assert!(result
+        .analysis
+        .fallback_reasons
+        .iter()
+        .any(|reason| reason.code == "dynamic_reference"));
+
+    // A2 doesn't depend on B1 at all, so one fallback region elsewhere in the
+    // workbook must not block it from being writeback-safe.
+    assert_eq!(result.writeback.mode, WritebackMode::LiveFormulaCache);
+    assert!(result
+        .writeback
+        .cells
+        .iter()
+        .any(|cell| cell.address == "A2" && cell.value == serde_json::json!(20.0)));
+
+    // C1's own formula ("=B1+1") uses only supported constructs, but its
+    // value is built on B1's untrustworthy result, so it must still be
+    // excluded -- and reported as excluded, not silently dropped.
+    assert!(!result.writeback.cells.iter().any(|cell| cell.address == "C1"));
+    assert!(result
+        .writeback
+        .skipped_reasons
+        .iter()
+        .any(|reason| reason.code == "downstream_of_fallback" && reason.count >= 1));
+}
+
+#[test]
 fn skips_evaluation_on_warm_noop_cache_hit() {
     let fixture = create_basic_ma_fixture();
     let engine = WarpSpeedEngine::new();

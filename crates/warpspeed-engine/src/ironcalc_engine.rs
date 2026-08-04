@@ -628,6 +628,11 @@ fn build_writeback_plan(
         "Excel remains the correctness authority for unsupported formulas and restore/rebuild behavior.".to_string(),
     ];
 
+    if snapshot.mode != CalcMode::Recalculate {
+        notes.push("Live writeback candidates are returned only for Recalculate runs.".to_string());
+        return writeback_plan(WritebackMode::None, Vec::new(), 0, Vec::new(), notes);
+    }
+
     let fallback_reasons = merged_fallback_reasons(
         graph,
         import_fallbacks,
@@ -635,35 +640,12 @@ fn build_writeback_plan(
         snapshot.evaluate_data_tables,
     );
     if !fallback_reasons.is_empty() {
-        let skipped = coverage_with_import_fallbacks(
-            graph,
-            import_fallbacks,
-            data_table_summary,
-            snapshot.evaluate_data_tables,
-        )
-        .fallback_formula_cells;
-        let skipped_reasons = vec![WritebackIssueSummary {
-            code: "fallback_regions_present".to_string(),
-            count: skipped,
-            message:
-                "Workbook has fallback regions, so Rust values are not written back for this MVP."
-                    .to_string(),
-        }];
-        notes.push(
-            "Live writeback is blocked because the workbook contains fallback regions.".to_string(),
-        );
-        return writeback_plan(
-            WritebackMode::None,
-            Vec::new(),
-            skipped,
-            skipped_reasons,
-            notes,
-        );
-    }
-
-    if snapshot.mode != CalcMode::Recalculate {
-        notes.push("Live writeback candidates are returned only for Recalculate runs.".to_string());
-        return writeback_plan(WritebackMode::None, Vec::new(), 0, Vec::new(), notes);
+        notes.push(format!(
+            "Workbook has {} fallback region(s); formula cells in or downstream of those regions \
+             are excluded from writeback below, but cells in other, unaffected regions are still \
+             included.",
+            fallback_reasons.len()
+        ));
     }
 
     let mut skipped_reasons = Vec::new();
@@ -722,7 +704,20 @@ fn collect_formula_writeback_cells(
 ) -> Vec<FormulaWritebackCell> {
     let mut cells = Vec::new();
 
-    for cell in graph.supported_formula_cells() {
+    let writeback_safe_cells = graph.writeback_safe_formula_cells().collect::<Vec<_>>();
+    let supported_count = graph.supported_formula_cells().count();
+    if supported_count > writeback_safe_cells.len() {
+        add_writeback_issue(
+            skipped_reasons,
+            "downstream_of_fallback",
+            "Formula depends, directly or through a range, on a fallback region elsewhere in \
+             the workbook, so its value can't be trusted for writeback even though the formula \
+             itself uses only supported constructs.",
+            supported_count - writeback_safe_cells.len(),
+        );
+    }
+
+    for cell in writeback_safe_cells {
         if is_data_table_output_cell(model, data_tables, cell) {
             add_writeback_issue(
                 skipped_reasons,
