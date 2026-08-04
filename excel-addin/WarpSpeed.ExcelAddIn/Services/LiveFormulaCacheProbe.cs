@@ -34,6 +34,23 @@ namespace WarpSpeed.ExcelAddIn.Services
                 Excel.Worksheet sheet = (Excel.Worksheet)scratchWorkbook.Worksheets[1];
                 Excel.Range cell = (Excel.Range)sheet.Range["A1"];
 
+                // Calculation mode is per-workbook since Excel 2010, so this
+                // freshly-added scratch workbook gets its own default
+                // Automatic mode regardless of what the caller's real
+                // workbook is set to. xlSet's documented contract is that an
+                // injected value persists only until the next recalculation
+                // -- under Automatic mode that recalculation can happen
+                // essentially immediately, silently overwriting the probe's
+                // injected value before it's ever read back. Force Manual
+                // here so the probe actually tests the same condition the
+                // real writeback runs under (WarpSpeedRibbon's
+                // ExcelCalculationGuard already puts the live workbook in
+                // Manual mode for the whole run). No need to restore this
+                // afterward: the scratch workbook is closed unconditionally
+                // in the finally block below and its calculation mode is
+                // discarded along with it.
+                excel.Calculation = Excel.XlCalculation.xlCalculationManual;
+
                 const double injectedValue = 12345.6789;
                 var diagnostics = new List<string>();
 
