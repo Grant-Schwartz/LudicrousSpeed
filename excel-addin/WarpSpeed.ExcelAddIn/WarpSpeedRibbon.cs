@@ -259,6 +259,31 @@ namespace WarpSpeed.ExcelAddIn
                 response,
                 string.Equals(mode, "recalculate", StringComparison.OrdinalIgnoreCase));
 
+            // Push engine results to any WS.LIVE cells, then let Excel
+            // propagate from those injection points. RTD values land
+            // asynchronously, so the recalculation is queued rather than
+            // called inline -- QueueAsMacro runs it once Excel has processed
+            // the pending updates, otherwise Calculate could run against
+            // values that haven't arrived yet and (under Manual mode) never
+            // get recalculated again.
+            var livePublished = resultWriter.PublishLiveValues(response);
+            if (livePublished > 0)
+            {
+                ExcelAsyncUtil.QueueAsMacro(() =>
+                {
+                    try
+                    {
+                        dynamic excelApp = ExcelDnaUtil.Application;
+                        excelApp.Calculate();
+                    }
+                    catch
+                    {
+                        // A failed propagation pass leaves the WS.LIVE cells
+                        // themselves correct; the user can press F9.
+                    }
+                });
+            }
+
             var hostMetrics = new HostRunMetrics
             {
                 ExcelBaselineMs = excelBaselineMs,
@@ -270,6 +295,7 @@ namespace WarpSpeed.ExcelAddIn
                 WritebackStatus = writebackResult.Status,
                 CalculationModeBeforeWriteback = writebackResult.CalculationBefore?.ToString(),
                 CalculationModeAfterWriteback = writebackResult.CalculationAfter?.ToString(),
+                LiveValuesPublished = livePublished,
             };
 
             reportWriter.Write(response, hostMetrics);

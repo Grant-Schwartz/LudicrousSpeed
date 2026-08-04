@@ -140,6 +140,8 @@ namespace WarpSpeed.ExcelAddIn.Models
 
         public string? CalculationModeAfterWriteback { get; set; }
 
+        public int LiveValuesPublished { get; set; }
+
         public double? EndToEndSpeedupVsExcel
         {
             get

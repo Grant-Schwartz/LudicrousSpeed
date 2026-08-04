@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -88,6 +89,38 @@ namespace WarpSpeed.ExcelAddIn.Services
                 calculationBefore,
                 calculationAfter,
                 "Live formula-cache writeback completed.");
+        }
+
+        /// <summary>
+        /// Pushes the engine's computed values into <see cref="LiveValueService"/>
+        /// so any WS.LIVE cells watching those addresses update in place.
+        /// Independent of the Value2/xlSet writeback path above, which cannot
+        /// write into cells that already hold formulas -- this is additive and
+        /// safe to run even when that path is blocked.
+        /// </summary>
+        public int PublishLiveValues(EngineResponse response)
+        {
+            if (!response.Ok || response.Result == null)
+            {
+                return 0;
+            }
+
+            var plan = response.Result.Writeback;
+            var published = new List<KeyValuePair<string, object>>(plan.Cells.Count);
+            foreach (var candidate in plan.Cells)
+            {
+                if (!TryConvertValue(candidate, out var value, out _) || value == null)
+                {
+                    continue;
+                }
+
+                published.Add(new KeyValuePair<string, object>(
+                    candidate.SheetName + "!" + candidate.Address,
+                    value));
+            }
+
+            LiveValueService.PublishAll(published);
+            return published.Count;
         }
 
         public string RestoreLastResults()

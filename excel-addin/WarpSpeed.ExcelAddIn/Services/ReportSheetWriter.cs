@@ -107,8 +107,10 @@ namespace WarpSpeed.ExcelAddIn.Services
             sheet.Range["B41"].Value2 = result.Benchmark.DataTables.DataTableParallelism;
             sheet.Range["A42"].Value2 = "Stale-cache data table cells (mismatch likely due to unrecalculated Excel cache)";
             sheet.Range["B42"].Value2 = result.Benchmark.DataTables.StaleCacheDataTableCells;
+            sheet.Range["A43"].Value2 = "Live values published for WS.LIVE cells";
+            sheet.Range["B43"].Value2 = hostMetrics.LiveValuesPublished;
 
-            var row = 44;
+            var row = 45;
             sheet.Range[$"A{row}"].Value2 = "Data table diagnostics";
             sheet.Range[$"B{row}"].Value2 = result.Benchmark.DataTables.Diagnostics.Count;
             if (result.Benchmark.DataTables.Diagnostics.Count > 0)
