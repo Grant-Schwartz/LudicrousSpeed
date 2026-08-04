@@ -175,6 +175,15 @@ namespace WarpSpeed.ExcelAddIn.Services
                         return;
                     }
                 }
+                else if (string.Equals(mechanism, "value2_then_restore_formula", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Value2 always destroys the formula outright; restoring
+                    // it immediately afterward is the expected shape of this
+                    // mechanism, not a failure signal the way an unexpected
+                    // formula change is for the plain com_value2 path below.
+                    cell.Value2 = comValue;
+                    cell.Formula = originalFormula;
+                }
                 else
                 {
                     cell.Value2 = comValue;

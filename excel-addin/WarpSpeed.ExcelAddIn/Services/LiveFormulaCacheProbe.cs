@@ -80,10 +80,16 @@ namespace WarpSpeed.ExcelAddIn.Services
                     return comValue2Result;
                 }
 
+                var value2ThenRestoreResult = TryValue2ThenRestoreFormula(cell, injectedValue, diagnostics);
+                if (value2ThenRestoreResult != null)
+                {
+                    return value2ThenRestoreResult;
+                }
+
                 return LiveFormulaCacheProbeResult.Unsupported(
-                    "No supported live formula-cache setter is available. Neither xlSet nor COM "
-                        + "Value2 satisfied the contract of updating only the cached result while "
-                        + "preserving the formula. Details: "
+                    "No supported live formula-cache setter is available. xlSet, COM Value2, and "
+                        + "Value2-then-restore-formula all failed to satisfy the contract of updating "
+                        + "only the cached result while preserving the formula. Details: "
                         + string.Join(" | ", diagnostics));
             }
             catch (Exception ex)
@@ -211,6 +217,51 @@ namespace WarpSpeed.ExcelAddIn.Services
                 return LiveFormulaCacheProbeResult.Supported(
                     "com_value2",
                     "COM Value2 preserved formula text and updated the displayed value in the probe workbook.");
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// A third candidate, not documented anywhere -- just a guess worth
+        /// testing cheaply: Value2 always destroys the formula outright (as
+        /// TryComValue2 already confirmed), but LiveFormulaResultWriter
+        /// already has cleanup code that restores the formula text
+        /// afterward. The untested question is what the *value* does right
+        /// after that restore, under Manual calculation mode: does
+        /// re-entering the same formula text force an immediate recalc
+        /// (losing the injected value), or does it leave whatever was last
+        /// displayed (our injected value) in place until the next real
+        /// calculation? If the latter, this is a genuinely different,
+        /// two-step mechanism from either candidate tried above.
+        /// </summary>
+        private static LiveFormulaCacheProbeResult? TryValue2ThenRestoreFormula(
+            Excel.Range cell,
+            double injectedValue,
+            List<string> diagnostics)
+        {
+            cell.Formula = "=1+1";
+            var formulaBefore = Convert.ToString(cell.Formula, CultureInfo.InvariantCulture) ?? "";
+
+            cell.Value2 = injectedValue;
+            cell.Formula = formulaBefore;
+
+            var formulaAfter = Convert.ToString(cell.Formula, CultureInfo.InvariantCulture) ?? "";
+            var valueAfter = cell.Value2;
+            var formulaPreserved = string.Equals(formulaBefore, formulaAfter, StringComparison.Ordinal);
+            var valueInjected = IsSameNumber(valueAfter, injectedValue);
+
+            diagnostics.Add(
+                $"value2_then_restore_formula: formulaBefore=\"{formulaBefore}\" "
+                + $"formulaAfter=\"{formulaAfter}\" valueAfter={valueAfter} "
+                + $"formulaPreserved={formulaPreserved} valueInjected={valueInjected}");
+
+            if (formulaPreserved && valueInjected)
+            {
+                return LiveFormulaCacheProbeResult.Supported(
+                    "value2_then_restore_formula",
+                    "Setting Value2 then immediately restoring the formula text left the injected "
+                        + "value displayed in the probe workbook.");
             }
 
             return null;
