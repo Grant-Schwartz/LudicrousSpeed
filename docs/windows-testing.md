@@ -79,10 +79,43 @@ Expected shape for the gated MVP:
 - `Writeback skipped reasons` includes `probe_blocked` when blocked.
 - The model formula cell still contains its original formula.
 
-If a future supported setter passes the probe, the same smoke test should show
-`Written cells` > `0`, Excel should remain in manual calculation mode, and
-`Restore Last Results` should run a full Excel rebuild and restore the previous
-calculation mode.
+### xlSet mechanism (unverified)
+
+`LiveFormulaCacheProbe` now tries the XLL C API's `xlSet` before falling back
+to checking (and, as always, rejecting) COM `Value2`. This was written and
+reasoned through against the documented XLL SDK semantics but has not been
+built or run against live Excel -- there was no Windows/Excel available to
+verify it. Before trusting it:
+
+1. Confirm `dotnet build` succeeds -- first check that `XlCall.xlSet`,
+   `XlCall.xlSheetId`, and the five-argument `ExcelReference` constructor
+   used in `LiveFormulaCacheProbe.BuildReference` actually compile and match
+   this project's pinned `ExcelDna.Integration` version's API shape.
+2. Run the smoke test above. Watch specifically for:
+   - `Live formula-cache probe` note in the report should say `xl_set`
+     succeeded, not `com_value2` or the final "no supported" message.
+   - `Host writeback status` = `applied` (not `blocked`), `Written cells` > 0.
+   - The model formula cell (`B1`) must still show `=SUM(A1:A2)` in the
+     formula bar after writeback, not a literal number.
+3. Force a `#DIV/0!`-style formula elsewhere and confirm `xlSet` doesn't
+   throw or corrupt unrelated cells; also confirm calling it from the ribbon
+   callback context doesn't throw an `XlCallException` about invalid calling
+   context (a real risk noted in `LiveFormulaCacheProbe`'s comments -- some
+   XLL C API functions are only valid from specific Excel-DNA execution
+   contexts).
+4. Click `Restore Last Results` and confirm Excel runs a full rebuild and the
+   calculation mode is restored to what it was before the run.
+5. Repeat on a large real workbook (e.g. `ALMS_v11.xlsx`) with
+   `--eval-data-tables` on, and confirm Excel doesn't hang or show stale
+   values in cells `xlSet` touched after a manual F9 recalculation --
+   per the XLL SDK, `xlSet`'s value on a worksheet cell is expected to be a
+   temporary display value that a real recalculation overwrites, which is the
+   intended behavior here, but is worth seeing happen for real.
+
+If `xlSet` doesn't pass the probe or doesn't behave as documented, the system
+degrades safely to today's behavior (`probe_blocked`, no cells written) --
+this is why it's implemented as a probed, try-first mechanism rather than an
+assumed one.
 
 ## In-Memory Snapshot Acceptance Test (Unverified Feature)
 

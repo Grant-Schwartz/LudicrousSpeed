@@ -68,7 +68,7 @@ namespace WarpSpeed.ExcelAddIn.Services
 
                 foreach (var candidate in plan.Cells)
                 {
-                    ApplyCandidate(workbook, candidate, plan);
+                    ApplyCandidate(workbook, candidate, plan, probeResult.Mechanism);
                 }
             }
 
@@ -109,7 +109,8 @@ namespace WarpSpeed.ExcelAddIn.Services
         private static void ApplyCandidate(
             Excel.Workbook workbook,
             FormulaWritebackCell candidate,
-            ExcelWritebackPlan plan)
+            ExcelWritebackPlan plan,
+            string mechanism)
         {
             Excel.Worksheet? worksheet = FindWorksheet(workbook, candidate.SheetName);
             if (worksheet == null)
@@ -155,7 +156,30 @@ namespace WarpSpeed.ExcelAddIn.Services
             var originalFormula = formula;
             try
             {
-                cell.Value2 = comValue;
+                if (string.Equals(mechanism, "xl_set", StringComparison.OrdinalIgnoreCase))
+                {
+                    var reference = LiveFormulaCacheProbe.BuildReference(
+                        workbook, candidate.SheetName, candidate.Row, candidate.Column);
+                    if (reference == null)
+                    {
+                        plan.Failed++;
+                        AddFailedSample(plan, candidate, "Could not resolve an XLL reference for this cell.");
+                        return;
+                    }
+
+                    var setResult = XlCall.Excel(XlCall.xlSet, reference, comValue);
+                    if (setResult is ExcelError)
+                    {
+                        plan.Failed++;
+                        AddFailedSample(plan, candidate, "xlSet returned an error for this cell.");
+                        return;
+                    }
+                }
+                else
+                {
+                    cell.Value2 = comValue;
+                }
+
                 var formulaAfter = Convert.ToString(cell.Formula, CultureInfo.InvariantCulture) ?? "";
                 if (!string.Equals(originalFormula, formulaAfter, StringComparison.Ordinal))
                 {
