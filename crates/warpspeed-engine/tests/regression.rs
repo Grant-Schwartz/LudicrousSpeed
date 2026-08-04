@@ -146,6 +146,47 @@ fn allows_formula_writeback_candidates_when_data_tables_validate() {
 }
 
 #[test]
+fn resolves_data_table_fallback_per_table_not_workbook_wide() {
+    let fixture = create_two_data_table_fixture();
+    let mut snapshot = snapshot_for(&fixture, CalcMode::Recalculate, None);
+    snapshot.evaluate_data_tables = true;
+
+    let result = WarpSpeedEngine::new().run(&snapshot).unwrap();
+
+    assert_eq!(result.benchmark.data_tables.data_table_count, 2);
+    // Table 2 (F8:F9) was seeded with deliberately wrong cached values, so
+    // the workbook overall does NOT fully validate...
+    assert_eq!(
+        result.benchmark.data_tables.status,
+        DataTableEvaluationStatus::Mismatch
+    );
+    assert!(result.benchmark.data_tables.mismatched_data_table_cells > 0);
+    // ...but table 1 (C3:D4) validated fine on its own, so its
+    // data_table_formula fallback must be resolved even though table 2's
+    // is not -- this is exactly the per-table behavior the old
+    // workbook-wide gate got wrong.
+    let data_table_fallback_locations = result
+        .analysis
+        .fallback_reasons
+        .iter()
+        .filter(|reason| reason.code == "data_table_formula")
+        .filter_map(|reason| reason.location.as_deref())
+        .collect::<Vec<_>>();
+    assert!(
+        !data_table_fallback_locations
+            .iter()
+            .any(|location| location.ends_with("!C3:D4")),
+        "validated table 1 should not still be reported as a fallback: {data_table_fallback_locations:?}"
+    );
+    assert!(
+        data_table_fallback_locations
+            .iter()
+            .any(|location| location.ends_with("!F8:F9")),
+        "mismatched table 2 should still be reported as a fallback: {data_table_fallback_locations:?}"
+    );
+}
+
+#[test]
 fn skips_evaluation_on_warm_noop_cache_hit() {
     let fixture = create_basic_ma_fixture();
     let engine = WarpSpeedEngine::new();
@@ -354,6 +395,84 @@ fn inject_data_table_formula(source_path: &Path, output_path: &Path) {
     }
 
     writer.finish().unwrap();
+}
+
+/// A workbook with two independent native Excel data tables: one whose
+/// cached body matches what the kernel computes (validates cleanly) and one
+/// whose cached body is deliberately wrong (guaranteed mismatch), to test
+/// that a mismatch in one table doesn't mask the other table's fallback
+/// having been resolved.
+fn create_two_data_table_fixture() -> PathBuf {
+    let tempdir = tempfile::tempdir().unwrap().keep();
+    let workbook_path = tempdir.join("two-data-table-model.xlsx");
+    let patched_path = tempdir.join("two-data-table-model-patched.xlsx");
+
+    let mut model = Model::new_empty("two-data-table-model", "en", "UTC", "en").unwrap();
+
+    // Table 1 (A1:D4), same shape as create_data_table_fixture: validates.
+    model.set_user_input(0, 1, 1, "2".to_string()).unwrap();
+    model.set_user_input(0, 2, 1, "10".to_string()).unwrap();
+    model.set_user_input(0, 2, 2, "=A1*A2".to_string()).unwrap();
+    model.set_user_input(0, 2, 3, "2".to_string()).unwrap();
+    model.set_user_input(0, 2, 4, "3".to_string()).unwrap();
+    model.set_user_input(0, 3, 2, "10".to_string()).unwrap();
+    model.set_user_input(0, 4, 2, "20".to_string()).unwrap();
+    model.set_user_input(0, 3, 3, "20".to_string()).unwrap();
+    model.set_user_input(0, 3, 4, "30".to_string()).unwrap();
+    model.set_user_input(0, 4, 3, "40".to_string()).unwrap();
+    model.set_user_input(0, 4, 4, "60".to_string()).unwrap();
+
+    // Table 2: one-variable, column-oriented (F1 varied, F8:F9 body),
+    // deliberately given wrong cached body values so it always mismatches.
+    model.set_user_input(0, 1, 6, "5".to_string()).unwrap(); // F1 input
+    model.set_user_input(0, 7, 6, "=F1*3".to_string()).unwrap(); // F7 source
+    model.set_user_input(0, 8, 5, "1".to_string()).unwrap(); // E8 axis
+    model.set_user_input(0, 9, 5, "2".to_string()).unwrap(); // E9 axis
+    model.set_user_input(0, 8, 6, "999".to_string()).unwrap(); // F8 body (wrong)
+    model.set_user_input(0, 9, 6, "999".to_string()).unwrap(); // F9 body (wrong)
+    model.evaluate();
+
+    save_to_xlsx(&model, workbook_path.to_string_lossy().as_ref()).unwrap();
+
+    let source = File::open(&workbook_path).unwrap();
+    let mut archive = ZipArchive::new(source).unwrap();
+    let output = File::create(&patched_path).unwrap();
+    let mut writer = ZipWriter::new(output);
+
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index).unwrap();
+        let name = file.name().to_string();
+        let options = FileOptions::default()
+            .compression_method(file.compression())
+            .last_modified_time(file.last_modified());
+
+        if name.ends_with('/') {
+            writer.add_directory(name, options).unwrap();
+            continue;
+        }
+
+        writer.start_file(name.clone(), options).unwrap();
+        if name == "xl/worksheets/sheet1.xml" {
+            let mut xml = String::new();
+            file.read_to_string(&mut xml).unwrap();
+            let patched = insert_data_table_formula(
+                &xml,
+                "C3",
+                r#"<f t="dataTable" ref="C3:D4" dt2D="1" dtr="1" r1="A1" r2="A2" ca="1"/>"#,
+            );
+            let patched = insert_data_table_formula(
+                &patched,
+                "F8",
+                r#"<f t="dataTable" ref="F8:F9" dtr="0" r1="F1" ca="1"/>"#,
+            );
+            writer.write_all(patched.as_bytes()).unwrap();
+        } else {
+            io::copy(&mut file, &mut writer).unwrap();
+        }
+    }
+
+    writer.finish().unwrap();
+    patched_path
 }
 
 fn insert_data_table_formula(xml: &str, cell_address: &str, formula_tag: &str) -> String {

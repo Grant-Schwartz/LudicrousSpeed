@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use ironcalc::base::{
-    expressions::{parser::Node, types::CellReferenceIndex, utils::number_to_column},
+    expressions::{
+        parser::Node, token::OpUnary, types::CellReferenceIndex, utils::number_to_column,
+    },
     Model,
 };
 use sha2::{Digest, Sha256};
@@ -546,9 +548,25 @@ fn collect_node_dependencies(
         Node::FunctionKind { kind, args } => {
             let function_name = format!("{kind:?}");
             match function_name.as_str() {
-                "Indirect" | "Offset" => dependencies.fallbacks.push(FormulaFallback {
+                "Offset" => {
+                    // A literal-offset OFFSET (e.g. OFFSET(A1, 0, 3)) always
+                    // resolves to the same cell regardless of any other
+                    // cell's value, so it's just an ordinary range
+                    // dependency in disguise. Only OFFSET calls whose shift
+                    // amount itself depends on another cell (e.g.
+                    // OFFSET(A1, 0, B1)) are genuinely dynamic.
+                    if let Some(range) = try_resolve_static_offset(args, context) {
+                        dependencies.ranges.push(range);
+                        return;
+                    }
+                    dependencies.fallbacks.push(FormulaFallback {
+                        code: "dynamic_reference",
+                        message: "Offset can change dependencies at runtime.".to_string(),
+                    });
+                }
+                "Indirect" => dependencies.fallbacks.push(FormulaFallback {
                     code: "dynamic_reference",
-                    message: format!("{function_name} can change dependencies at runtime."),
+                    message: "Indirect can change dependencies at runtime.".to_string(),
                 }),
                 "Rand" | "Randbetween" | "Now" | "Today" => {
                     dependencies.fallbacks.push(FormulaFallback {
@@ -659,6 +677,112 @@ fn absolute_coord(value: i32, context: i32, is_absolute: bool) -> i32 {
         value
     } else {
         value + context
+    }
+}
+
+struct StaticOffsetBase {
+    sheet: u32,
+    start_row: i32,
+    start_column: i32,
+    rows: i32,
+    columns: i32,
+}
+
+/// Resolves OFFSET(reference, rows, cols[, height[, width]]) to a fixed
+/// RangeRef when every argument that affects the result is a compile-time
+/// constant: a literal reference/range base, and literal numeric (optionally
+/// unary-minus) shift/height/width arguments. Returns None the moment any
+/// argument could depend on another cell's value, since then the true target
+/// can change on any recalc and must stay a `dynamic_reference` fallback.
+fn try_resolve_static_offset(args: &[Node], context: CellId) -> Option<RangeRef> {
+    if args.len() < 3 || args.len() > 5 {
+        return None;
+    }
+
+    let base = try_static_offset_base(&args[0], context)?;
+    let row_offset = try_constant_i32(&args[1])?;
+    let column_offset = try_constant_i32(&args[2])?;
+    let height = match args.get(3) {
+        None | Some(Node::EmptyArgKind) => base.rows,
+        Some(node) => try_constant_i32(node)?,
+    };
+    let width = match args.get(4) {
+        None | Some(Node::EmptyArgKind) => base.columns,
+        Some(node) => try_constant_i32(node)?,
+    };
+    if height <= 0 || width <= 0 {
+        return None;
+    }
+
+    let start_row = base.start_row + row_offset;
+    let start_column = base.start_column + column_offset;
+    Some(RangeRef {
+        sheet: base.sheet,
+        start_row,
+        start_column,
+        end_row: start_row + height - 1,
+        end_column: start_column + width - 1,
+    })
+}
+
+fn try_static_offset_base(node: &Node, context: CellId) -> Option<StaticOffsetBase> {
+    match node {
+        Node::ReferenceKind {
+            sheet_index,
+            absolute_row,
+            absolute_column,
+            row,
+            column,
+            ..
+        } => Some(StaticOffsetBase {
+            sheet: *sheet_index,
+            start_row: absolute_coord(*row, context.row, *absolute_row),
+            start_column: absolute_coord(*column, context.column, *absolute_column),
+            rows: 1,
+            columns: 1,
+        }),
+        Node::RangeKind {
+            sheet_index,
+            absolute_row1,
+            absolute_column1,
+            row1,
+            column1,
+            absolute_row2,
+            absolute_column2,
+            row2,
+            column2,
+            ..
+        } => {
+            let row_a = absolute_coord(*row1, context.row, *absolute_row1);
+            let row_b = absolute_coord(*row2, context.row, *absolute_row2);
+            let column_a = absolute_coord(*column1, context.column, *absolute_column1);
+            let column_b = absolute_coord(*column2, context.column, *absolute_column2);
+            let (start_row, end_row) = (row_a.min(row_b), row_a.max(row_b));
+            let (start_column, end_column) = (column_a.min(column_b), column_a.max(column_b));
+            Some(StaticOffsetBase {
+                sheet: *sheet_index,
+                start_row,
+                start_column,
+                rows: end_row - start_row + 1,
+                columns: end_column - start_column + 1,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Only a bare numeric literal or its unary negation counts as a compile-time
+/// constant here -- anything else (a cell reference, a nested formula) could
+/// change value on a future recalc, which is exactly the case that must stay
+/// a fallback rather than be silently baked into the dependency graph.
+fn try_constant_i32(node: &Node) -> Option<i32> {
+    match node {
+        Node::NumberKind(value) => Some(*value as i32),
+        Node::UnaryKind {
+            kind: OpUnary::Minus,
+            right,
+        } => try_constant_i32(right).map(|value| -value),
+        _ => None,
     }
 }
 
@@ -1044,6 +1168,66 @@ mod tests {
             .fallback_details()
             .iter()
             .any(|detail| detail.formula.as_deref() == Some("=INDIRECT(\"A2\")")));
+    }
+
+    #[test]
+    fn treats_literal_offset_as_a_supported_range_dependency() {
+        let mut model = Model::new_empty("static-offset", "en", "UTC", "en").unwrap();
+        model.set_user_input(0, 1, 1, "10".to_string()).unwrap();
+        model.set_user_input(0, 1, 2, "20".to_string()).unwrap();
+        model
+            .set_user_input(0, 1, 3, "=OFFSET(A1,0,1)".to_string())
+            .unwrap();
+
+        let graph = build_dependency_graph(&model);
+        assert_eq!(graph.coverage().formula_cells, 1);
+        assert_eq!(graph.coverage().fallback_formula_cells, 0);
+        assert!(graph.is_result_cache_safe());
+        // The formula's real dependency is B1 (A1 shifted right by one
+        // column), not A1 itself -- OFFSET only uses A1's location.
+        assert_eq!(
+            graph
+                .dirty_summary(&[CellId::new(0, 1, 2)])
+                .dirty_formula_cells,
+            1
+        );
+    }
+
+    #[test]
+    fn treats_offset_with_negative_shift_and_explicit_size_as_supported() {
+        let mut model = Model::new_empty("static-offset-size", "en", "UTC", "en").unwrap();
+        model.set_user_input(0, 5, 5, "1".to_string()).unwrap();
+        model.set_user_input(0, 3, 3, "2".to_string()).unwrap();
+        model
+            .set_user_input(0, 1, 1, "=SUM(OFFSET(E5,-2,-2,1,1))".to_string())
+            .unwrap();
+
+        let graph = build_dependency_graph(&model);
+        assert_eq!(graph.coverage().fallback_formula_cells, 0);
+        assert_eq!(
+            graph
+                .dirty_summary(&[CellId::new(0, 3, 3)])
+                .dirty_formula_cells,
+            1
+        );
+    }
+
+    #[test]
+    fn treats_offset_with_cell_dependent_shift_as_dynamic_reference_fallback() {
+        let mut model = Model::new_empty("dynamic-offset", "en", "UTC", "en").unwrap();
+        model.set_user_input(0, 1, 1, "10".to_string()).unwrap();
+        model.set_user_input(0, 1, 2, "1".to_string()).unwrap();
+        model
+            .set_user_input(0, 1, 3, "=OFFSET(A1,0,B1)".to_string())
+            .unwrap();
+
+        let graph = build_dependency_graph(&model);
+        assert_eq!(graph.coverage().fallback_formula_cells, 1);
+        assert!(graph
+            .fallback_reasons()
+            .iter()
+            .any(|reason| reason.code == "dynamic_reference"
+                && reason.message.contains("Offset")));
     }
 
     #[test]

@@ -86,6 +86,7 @@ impl CalcEngine for IronCalcEngine {
                             &entry.graph,
                             &entry.import_fallbacks,
                             &data_tables,
+                            snapshot.evaluate_data_tables,
                         );
                         result.writeback = build_writeback_plan(
                             snapshot,
@@ -571,7 +572,12 @@ fn build_result(
     timing: TimingBreakdown,
 ) -> CalcResult {
     let data_table_summary = timing.data_tables.clone();
-    let fallback_reasons = merged_fallback_reasons(graph, import_fallbacks, &data_table_summary);
+    let fallback_reasons = merged_fallback_reasons(
+        graph,
+        import_fallbacks,
+        &data_table_summary,
+        snapshot.evaluate_data_tables,
+    );
     plan.workbook_hash = workbook_hash.to_string();
     plan.mode = snapshot.mode;
     plan.fallback_reasons = fallback_reasons.clone();
@@ -581,9 +587,19 @@ fn build_result(
         analysis: AnalysisSummary {
             workbook_name: snapshot.workbook_name.clone(),
             ironcalc_can_evaluate: fallback_reasons.is_empty(),
-            coverage: coverage_with_import_fallbacks(graph, import_fallbacks, &data_table_summary),
+            coverage: coverage_with_import_fallbacks(
+                graph,
+                import_fallbacks,
+                &data_table_summary,
+                snapshot.evaluate_data_tables,
+            ),
             fallback_reasons,
-            fallback_details: merged_fallback_details(graph, import_fallbacks),
+            fallback_details: merged_fallback_details(
+                graph,
+                import_fallbacks,
+                &data_table_summary,
+                snapshot.evaluate_data_tables,
+            ),
         },
         benchmark: benchmark_summary(snapshot, started, timing),
         writeback: build_writeback_plan(
@@ -612,10 +628,20 @@ fn build_writeback_plan(
         "Excel remains the correctness authority for unsupported formulas and restore/rebuild behavior.".to_string(),
     ];
 
-    let fallback_reasons = merged_fallback_reasons(graph, import_fallbacks, data_table_summary);
+    let fallback_reasons = merged_fallback_reasons(
+        graph,
+        import_fallbacks,
+        data_table_summary,
+        snapshot.evaluate_data_tables,
+    );
     if !fallback_reasons.is_empty() {
-        let skipped = coverage_with_import_fallbacks(graph, import_fallbacks, data_table_summary)
-            .fallback_formula_cells;
+        let skipped = coverage_with_import_fallbacks(
+            graph,
+            import_fallbacks,
+            data_table_summary,
+            snapshot.evaluate_data_tables,
+        )
+        .fallback_formula_cells;
         let skipped_reasons = vec![WritebackIssueSummary {
             code: "fallback_regions_present".to_string(),
             count: skipped,
@@ -1045,12 +1071,21 @@ fn merged_fallback_reasons(
     graph: &DependencyGraph,
     import_fallbacks: &ImportFallbacks,
     data_table_summary: &DataTableBenchmarkSummary,
+    evaluate_data_tables: bool,
 ) -> Vec<FallbackReason> {
-    let mut fallback_reasons = if data_table_fallbacks_are_validated(data_table_summary) {
-        Vec::new()
-    } else {
-        import_fallbacks.fallback_reasons.clone()
-    };
+    let mut fallback_reasons = import_fallbacks
+        .fallback_reasons
+        .iter()
+        .filter(|reason| {
+            !table_fallback_is_resolved(
+                &reason.code,
+                reason.location.as_deref(),
+                data_table_summary,
+                evaluate_data_tables,
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     fallback_reasons.extend(graph.fallback_reasons());
     fallback_reasons
 }
@@ -1058,8 +1093,22 @@ fn merged_fallback_reasons(
 fn merged_fallback_details(
     graph: &DependencyGraph,
     import_fallbacks: &ImportFallbacks,
+    data_table_summary: &DataTableBenchmarkSummary,
+    evaluate_data_tables: bool,
 ) -> Vec<FallbackDetail> {
-    let mut fallback_details = import_fallbacks.fallback_details.clone();
+    let mut fallback_details = import_fallbacks
+        .fallback_details
+        .iter()
+        .filter(|detail| {
+            !table_fallback_is_resolved(
+                &detail.code,
+                detail.location.as_deref(),
+                data_table_summary,
+                evaluate_data_tables,
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     fallback_details.extend(graph.fallback_details());
     fallback_details
 }
@@ -1068,21 +1117,60 @@ fn coverage_with_import_fallbacks(
     graph: &DependencyGraph,
     import_fallbacks: &ImportFallbacks,
     data_table_summary: &DataTableBenchmarkSummary,
+    evaluate_data_tables: bool,
 ) -> FormulaCoverage {
     let mut coverage = graph.coverage();
     coverage.formula_cells += import_fallbacks.fallback_formula_cells;
-    if !data_table_fallbacks_are_validated(data_table_summary) {
-        coverage.fallback_formula_cells += import_fallbacks.fallback_formula_cells;
-    }
+    let unresolved = import_fallbacks
+        .fallback_reasons
+        .iter()
+        .filter(|reason| {
+            !table_fallback_is_resolved(
+                &reason.code,
+                reason.location.as_deref(),
+                data_table_summary,
+                evaluate_data_tables,
+            )
+        })
+        .count();
+    coverage.fallback_formula_cells += unresolved;
     coverage
 }
 
-fn data_table_fallbacks_are_validated(data_table_summary: &DataTableBenchmarkSummary) -> bool {
-    data_table_summary.data_table_count > 0
-        && data_table_summary.status == DataTableEvaluationStatus::Validated
-        && data_table_summary.data_table_cells == data_table_summary.validated_data_table_cells
-        && data_table_summary.mismatched_data_table_cells == 0
-        && data_table_summary.unsupported_data_table_cells == 0
+/// A `data_table_formula` import fallback (recorded unconditionally at
+/// import time for every native Excel data table cell, before we know
+/// whether the table will validate) is resolved -- and can stop being
+/// reported as a fallback -- once *that specific table* is confirmed to have
+/// validated cleanly: no mismatch, no unsupported-shape diagnostic, nothing.
+/// This is deliberately per-table rather than a single workbook-wide gate,
+/// so one problematic table (a stale Excel cache, an unsupported function)
+/// doesn't mask every other table in the same workbook that validated fine.
+///
+/// Only trusted when every eligible table was actually (re-)evaluated this
+/// run (`reused_data_table_cells == 0`, true for any cold load and any warm
+/// run with no dirty-table skips): otherwise "no diagnostic this round"
+/// could just mean "not dirty, not rechecked" rather than "clean", and a
+/// genuinely still-broken table could wrongly look resolved. That case falls
+/// back to the previous, safe-but-coarser workbook-wide behavior.
+fn table_fallback_is_resolved(
+    code: &str,
+    location: Option<&str>,
+    data_table_summary: &DataTableBenchmarkSummary,
+    evaluate_data_tables: bool,
+) -> bool {
+    if code != "data_table_formula"
+        || !evaluate_data_tables
+        || data_table_summary.reused_data_table_cells > 0
+    {
+        return false;
+    }
+    let Some(location) = location else {
+        return false;
+    };
+    !data_table_summary
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.table_id == location)
 }
 
 fn cache_hit_rate(graph: &DependencyGraph, dirty: DirtySummary) -> f64 {
