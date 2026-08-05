@@ -80,6 +80,42 @@ namespace WarpSpeed.ExcelAddIn.Services
         }
 
         public static int WatchedCellCount => Cells.Count;
+
+        /// <summary>
+        /// Diagnostic: describes the registry state for one address, so a
+        /// #N/A can be traced to the actual broken link -- nothing published
+        /// at all, published under a different key, or published but never
+        /// delivered to a subscriber.
+        /// </summary>
+        public static string Describe(string address)
+        {
+            var key = NormalizeAddress(address);
+            if (!Cells.TryGetValue(key, out var cell))
+            {
+                return $"key=\"{key}\" NOT in registry (total tracked={Cells.Count})";
+            }
+
+            return $"key=\"{key}\" {cell.Describe()} (total tracked={Cells.Count})";
+        }
+
+        /// <summary>
+        /// Diagnostic: a sample of keys actually present, to eyeball against
+        /// what a WS.LIVE formula is asking for.
+        /// </summary>
+        public static string SampleKeys(int count)
+        {
+            var keys = new List<string>();
+            foreach (var key in Cells.Keys)
+            {
+                keys.Add(key);
+                if (keys.Count >= count)
+                {
+                    break;
+                }
+            }
+
+            return keys.Count == 0 ? "<registry empty>" : string.Join(" | ", keys);
+        }
     }
 
     /// <summary>
@@ -127,6 +163,17 @@ namespace WarpSpeed.ExcelAddIn.Services
             foreach (var observer in snapshot)
             {
                 observer.OnNext(value);
+            }
+        }
+
+        internal string Describe()
+        {
+            lock (gate)
+            {
+                var value = hasValue
+                    ? Convert.ToString(latest, CultureInfo.InvariantCulture) ?? "<null>"
+                    : "<none published>";
+                return $"observers={observers.Count} hasValue={hasValue} value={value}";
             }
         }
 
@@ -192,10 +239,38 @@ namespace WarpSpeed.ExcelAddIn.Services
 
         [ExcelFunction(
             Name = "WS.LIVECOUNT",
-            Description = "Number of cell addresses WarpSpeed is currently tracking for live values.")]
+            Description = "Number of cell addresses WarpSpeed is currently tracking for live values.",
+            IsVolatile = true)]
         public static object WsLiveCount()
         {
             return (double)LiveValueService.WatchedCellCount;
+        }
+
+        [ExcelFunction(
+            Name = "WS.LIVEDEBUG",
+            Description = "Diagnostic: registry state for one address (is it present, does it have a value, is anything subscribed).",
+            IsVolatile = true)]
+        public static object WsLiveDebug(
+            [ExcelArgument(Name = "address", Description = "Cell to inspect, e.g. \"Sheet1!A1\"")]
+            string address)
+        {
+            return LiveValueService.Describe(address);
+        }
+
+        [ExcelFunction(
+            Name = "WS.LIVEKEYS",
+            Description = "Diagnostic: sample of addresses currently in the live-value registry.",
+            IsVolatile = true)]
+        public static object WsLiveKeys(
+            [ExcelArgument(Name = "count", Description = "How many keys to show")] object count)
+        {
+            var n = 5;
+            if (count is double d && d >= 1)
+            {
+                n = (int)d;
+            }
+
+            return LiveValueService.SampleKeys(Math.Min(n, 40));
         }
     }
 }
