@@ -330,6 +330,7 @@ pub(crate) fn summarize_data_tables(
                 .as_ref()
                 .map(|cell| format!("{}!{}", cell.sheet_name, cell.address)),
             is_two_dimensional: table.is_two_dimensional,
+            dtr: table.dtr,
             kernel_eligible: table.is_parallel_validation_eligible(),
             cell_count: table.cell_count(),
         })

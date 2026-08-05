@@ -402,6 +402,9 @@ namespace WarpSpeed.ExcelAddIn.Models
         [JsonProperty("is_two_dimensional")]
         public bool IsTwoDimensional { get; set; }
 
+        [JsonProperty("dtr")]
+        public bool Dtr { get; set; }
+
         [JsonProperty("kernel_eligible")]
         public bool KernelEligible { get; set; }
 

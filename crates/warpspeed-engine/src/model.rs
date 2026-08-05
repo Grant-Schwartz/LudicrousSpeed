@@ -276,6 +276,9 @@ pub struct DataTableRegionInfo {
     pub column_input_cell: Option<String>,
     pub row_input_cell: Option<String>,
     pub is_two_dimensional: bool,
+    /// OOXML `dtr`. For a one-variable table this decides which of Excel's
+    /// two Data Table inputs the single axis feeds.
+    pub dtr: bool,
     /// True when the kernel can actually evaluate this table's shape. Tables
     /// that aren't eligible must keep their native Excel data table, since
     /// WarpSpeed has no values to drive them with.

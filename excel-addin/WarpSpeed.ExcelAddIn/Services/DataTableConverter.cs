@@ -177,7 +177,9 @@ namespace WarpSpeed.ExcelAddIn.Services
 
                     var sheetName = CellText(metadata, row, 2);
                     var rangeAddress = CellText(metadata, row, 3);
-                    if (!string.IsNullOrWhiteSpace(sheetName)
+                    var alreadyRestored = !string.IsNullOrWhiteSpace(CellText(metadata, row, 10));
+                    if (!alreadyRestored
+                        && !string.IsNullOrWhiteSpace(sheetName)
                         && !string.IsNullOrWhiteSpace(rangeAddress))
                     {
                         var columnInput = CellText(metadata, row, 4);
@@ -190,9 +192,7 @@ namespace WarpSpeed.ExcelAddIn.Services
                             ColumnInputCell = string.IsNullOrWhiteSpace(columnInput) ? null : columnInput,
                             RowInputCell = string.IsNullOrWhiteSpace(rowInput) ? null : rowInput,
                             IsTwoDimensional = CellText(metadata, row, 7) == "1",
-                            // Excel only exposes dtr for one-variable tables;
-                            // a two-variable table always uses both axes.
-                            Dtr = CellText(metadata, row, 7) == "1",
+                            Dtr = CellText(metadata, row, 9) == "1",
                         });
                     }
 
@@ -209,14 +209,15 @@ namespace WarpSpeed.ExcelAddIn.Services
         }
 
         /// <summary>
-        /// Forgets a restored table so its definition stops being replayed.
+        /// Marks a table as restored so its definition stops being replayed as
+        /// an override, without discarding it. Deleting the row instead makes
+        /// a botched restore unrecoverable -- the definition needed to rebuild
+        /// the table is exactly what gets thrown away.
         /// </summary>
-        private static void ClearMetadataRow(Excel.Worksheet metadata, int row)
+        private static void MarkMetadataRowRestored(Excel.Worksheet metadata, int row)
         {
-            for (var column = 1; column <= 8; column++)
-            {
-                ((Excel.Range)metadata.Cells[row, column]).ClearContents();
-            }
+            ((Excel.Range)metadata.Cells[row, 10]).Value2 =
+                DateTime.Now.ToString("u", CultureInfo.InvariantCulture);
         }
 
         public RestoreResult RestoreNativeTables()
@@ -250,13 +251,19 @@ namespace WarpSpeed.ExcelAddIn.Services
                         break;
                     }
 
+                    if (!string.IsNullOrWhiteSpace(CellText(metadata, row, 10)))
+                    {
+                        row++;
+                        continue;
+                    }
+
                     try
                     {
                         RestoreOne(workbook, metadata, row);
                         // The native table is back, so the engine will
                         // discover it again; replaying the override would now
                         // shadow the real thing.
-                        ClearMetadataRow(metadata, row);
+                        MarkMetadataRowRestored(metadata, row);
                         result.Restored++;
                     }
                     catch (Exception ex)
@@ -289,30 +296,68 @@ namespace WarpSpeed.ExcelAddIn.Services
             Excel.Worksheet sheet = FindWorksheet(workbook, sheetName)
                 ?? throw new InvalidOperationException($"sheet '{sheetName}' not found");
 
+            var isTwoDimensional = CellText(metadata, row, 7) == "1";
+            var dtr = CellText(metadata, row, 9) == "1";
+
             Excel.Range body = sheet.Range[rangeAddress];
+            if (body.Row <= 1 || body.Column <= 1)
+            {
+                throw new InvalidOperationException(
+                    "table body has no room for its axis row/column above and to the left");
+            }
+
+            // Only the body is cleared. The axis values and the source formula
+            // sit outside it and must survive -- they are the user's own
+            // content, and Table() needs them in place to rebuild from.
             body.ClearContents();
 
-            // Excel's Data Table dialog takes (RowInput, ColumnInput); a
-            // one-variable table passes only the one it uses, so the unused
-            // side is omitted rather than passed as an empty reference.
-            var rowInputRange = ResolveCell(workbook, rowInput);
-            var columnInputRange = ResolveCell(workbook, columnInput);
+            // Range.Table() must be called on the WHOLE table rectangle --
+            // the axis row above, the axis column to the left, and the body --
+            // not the body alone. Calling it on just the body makes Excel
+            // treat the body's own first row and column as the axes, which
+            // silently produces a table one row and one column smaller filled
+            // with zeros.
+            Excel.Range full = sheet.Range[
+                (Excel.Range)sheet.Cells[body.Row - 1, body.Column - 1],
+                (Excel.Range)sheet.Cells[
+                    body.Row + body.Rows.Count - 1,
+                    body.Column + body.Columns.Count - 1]];
 
-            if (rowInputRange != null && columnInputRange != null)
+            // Our field names are inverted relative to Excel's. The kernel
+            // feeds the values along the TOP ROW into what we call
+            // column_input_cell (OOXML r1) -- a mapping validated against
+            // Excel on hundreds of cells -- and Excel calls the cell that the
+            // top row feeds its ROW input. So r1 is Excel's RowInput and r2 is
+            // its ColumnInput, not the other way round.
+            var r1 = ResolveCell(workbook, columnInput);
+            var r2 = ResolveCell(workbook, rowInput);
+
+            if (isTwoDimensional)
             {
-                body.Table(rowInputRange, columnInputRange);
+                if (r1 == null || r2 == null)
+                {
+                    throw new InvalidOperationException(
+                        "a two-variable table needs both input cells recorded");
+                }
+
+                full.Table(r1, r2);
+                return;
             }
-            else if (columnInputRange != null)
+
+            if (r1 == null)
             {
-                body.Table(ColumnInput: columnInputRange);
+                throw new InvalidOperationException("no input cell recorded for this table");
             }
-            else if (rowInputRange != null)
+
+            // One-variable: dtr says whether the single axis runs along a row
+            // (feeding Excel's RowInput) or down a column (feeding ColumnInput).
+            if (dtr)
             {
-                body.Table(RowInput: rowInputRange);
+                full.Table(RowInput: r1);
             }
             else
             {
-                throw new InvalidOperationException("no input cell recorded for this table");
+                full.Table(ColumnInput: r1);
             }
         }
 
@@ -330,6 +375,8 @@ namespace WarpSpeed.ExcelAddIn.Services
             // every later run, not just to restore the native table.
             ((Excel.Range)metadata.Cells[row, 7]).Value2 = region.IsTwoDimensional ? 1d : 0d;
             ((Excel.Range)metadata.Cells[row, 8]).Value2 = AnchorOf(region.RangeAddress);
+            ((Excel.Range)metadata.Cells[row, 9]).Value2 = region.Dtr ? 1d : 0d;
+            ((Excel.Range)metadata.Cells[row, 10]).Value2 = "";
         }
 
         private static int NextMetadataRow(Excel.Worksheet metadata)
@@ -361,6 +408,8 @@ namespace WarpSpeed.ExcelAddIn.Services
             ((Excel.Range)sheet.Cells[1, 6]).Value2 = "converted_at";
             ((Excel.Range)sheet.Cells[1, 7]).Value2 = "is_two_dimensional";
             ((Excel.Range)sheet.Cells[1, 8]).Value2 = "anchor_address";
+            ((Excel.Range)sheet.Cells[1, 9]).Value2 = "dtr";
+            ((Excel.Range)sheet.Cells[1, 10]).Value2 = "restored_at";
             sheet.Visible = Excel.XlSheetVisibility.xlSheetHidden;
             return sheet;
         }
