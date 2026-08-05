@@ -15,9 +15,10 @@ use crate::engine::CalcEngine;
 use crate::graph::{build_dependency_graph, CellId, DependencyGraph, DirtySummary};
 use crate::model::{
     AnalysisSummary, BenchmarkSummary, CalcMode, CalcPlan, CalcResult, CalculationStrategy,
-    ChangedCell, DataTableBenchmarkSummary, DataTableEvaluationStatus, EngineError,
-    ExcelWritebackPlan, FallbackDetail, FallbackReason, FormulaCoverage, FormulaValueKind,
-    FormulaWritebackCell, InlineWorkbook, WorkbookSnapshot, WritebackIssueSummary, WritebackMode,
+    ChangedCell, DataTableBenchmarkSummary, DataTableCellValue, DataTableEvaluationStatus,
+    EngineError, ExcelWritebackPlan, FallbackDetail, FallbackReason, FormulaCoverage,
+    FormulaValueKind, FormulaWritebackCell, InlineWorkbook, WorkbookSnapshot,
+    WritebackIssueSummary, WritebackMode,
 };
 use crate::xlsx_sanitize::{
     remove_sanitized_workbook, sanitize_data_table_formulas, ImportFallbacks,
@@ -80,6 +81,11 @@ impl CalcEngine for IronCalcEngine {
                         if data_tables.data_table_count > 0 {
                             data_tables.status = DataTableEvaluationStatus::Reused;
                         }
+                        // Nothing was re-evaluated on a no-change run, but the
+                        // host still needs current values for every data table
+                        // cell it is driving live -- otherwise those cells go
+                        // stale the moment a second recalc happens.
+                        data_tables.cell_values = entry.data_table_values.clone();
                         result.plan.mode = snapshot.mode;
                         result.plan.workbook_hash = entry.workbook_hash.clone();
                         result.plan.fallback_reasons = merged_fallback_reasons(
@@ -156,12 +162,17 @@ impl CalcEngine for IronCalcEngine {
                     let eval_started = Instant::now();
                     entry.model.evaluate();
                     let ironcalc_ms = eval_started.elapsed().as_millis();
-                    let data_tables = evaluate_data_tables(
+                    let mut data_tables = evaluate_data_tables(
                         &entry.model,
                         &entry.data_tables,
                         &applied.changed_cells,
                         snapshot.evaluate_data_tables,
                     );
+                    // Only dirty tables were re-evaluated. Fold those results
+                    // over the cached set so the host receives current values
+                    // for every table, not just the ones that changed.
+                    merge_data_table_values(&mut entry.data_table_values, &data_tables.cell_values);
+                    data_tables.cell_values = entry.data_table_values.clone();
 
                     let result = build_result(
                         snapshot,
@@ -269,9 +280,30 @@ struct CachedWorkbook {
     import_fallbacks: ImportFallbacks,
     data_tables: Vec<DataTableRegion>,
     cached_formula_values: HashMap<CellId, CachedFormulaValue>,
+    /// Latest kernel value for every data table output cell, carried across
+    /// runs. A warm run only re-evaluates tables whose inputs are dirty, and a
+    /// no-change run re-evaluates none at all, so without this the engine
+    /// would report values for just those tables (or none) and a host driving
+    /// live cells would see the rest silently stop updating.
+    data_table_values: Vec<DataTableCellValue>,
     structure_hash: String,
     workbook_hash: String,
     last_result: Option<CalcResult>,
+}
+
+/// Replaces cached values for tables that were re-evaluated this run and
+/// keeps the rest, so the merged set always covers every table.
+fn merge_data_table_values(cached: &mut Vec<DataTableCellValue>, fresh: &[DataTableCellValue]) {
+    if fresh.is_empty() {
+        return;
+    }
+
+    let refreshed = fresh
+        .iter()
+        .map(|value| value.table_id.as_str())
+        .collect::<HashSet<_>>();
+    cached.retain(|value| !refreshed.contains(value.table_id.as_str()));
+    cached.extend(fresh.iter().cloned());
 }
 
 impl CachedWorkbook {
@@ -302,6 +334,7 @@ impl LoadedWorkbook {
             import_fallbacks: self.import_fallbacks,
             data_tables: self.data_tables,
             cached_formula_values: self.cached_formula_values,
+            data_table_values: self.data_table_summary.cell_values.clone(),
             structure_hash: self.structure_hash,
             workbook_hash: self.workbook_hash,
             last_result: None,

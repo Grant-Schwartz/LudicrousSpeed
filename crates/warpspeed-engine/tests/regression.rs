@@ -729,3 +729,52 @@ fn inline_workbook_id_can_be_warmed_with_changed_cells_on_a_later_run() {
         serde_json::json!(14.0)
     );
 }
+
+#[test]
+fn data_table_values_persist_across_warm_runs() {
+    let fixture = create_data_table_fixture();
+    let engine = WarpSpeedEngine::new();
+
+    let mut cold = snapshot_for(&fixture, CalcMode::Recalculate, None);
+    cold.evaluate_data_tables = true;
+    let cold_result = engine.run(&cold).unwrap();
+    let cold_values = cold_result.writeback.data_table_cells.len();
+    assert!(
+        cold_values > 0,
+        "cold run should publish data table cell values"
+    );
+
+    // Warm no-change run: the engine re-evaluates no tables at all. It must
+    // still report current values for every data table cell, or a host
+    // driving those cells live would watch them go stale on the second
+    // recalc -- which is exactly the bug this guards.
+    let mut warm = snapshot_for(&fixture, CalcMode::Recalculate, None);
+    warm.evaluate_data_tables = true;
+    warm.workbook_path = String::new();
+    let warm_result = engine.run(&warm).unwrap();
+    assert_eq!(
+        warm_result.writeback.data_table_cells.len(),
+        cold_values,
+        "warm no-change run must still report every data table cell value"
+    );
+
+    // And a warm run with an edit, where only dirty tables are recomputed,
+    // must still report the full set rather than only the recomputed ones.
+    let mut edited = snapshot_for(&fixture, CalcMode::Recalculate, None);
+    edited.evaluate_data_tables = true;
+    edited.workbook_path = String::new();
+    edited.changed_cells = vec![ChangedCell {
+        sheet_name: "Sheet1".to_string(),
+        row: 1,
+        column: 1,
+        address: "A1".to_string(),
+        input: "7".to_string(),
+        is_formula: false,
+    }];
+    let edited_result = engine.run(&edited).unwrap();
+    assert_eq!(
+        edited_result.writeback.data_table_cells.len(),
+        cold_values,
+        "warm edited run must report all data table cells, not only recomputed tables"
+    );
+}

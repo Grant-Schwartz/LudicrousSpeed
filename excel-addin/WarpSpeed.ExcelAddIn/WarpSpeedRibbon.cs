@@ -126,6 +126,12 @@ namespace WarpSpeed.ExcelAddIn
         public void ConvertDataTablesToLive(IRibbonControl control)
         {
             WorkbookSnapshot? snapshot = null;
+            // Manual mode for the whole operation, established before the
+            // snapshot is taken. Publishing marks every dependent of ~11k RTD
+            // values dirty, and SaveCopyAs recalculates a dirty workbook
+            // before writing -- under Automatic either one triggers exactly
+            // the full recalculation this feature exists to avoid.
+            using var calculationGuard = ExcelCalculationGuard.Enter(disableNativeDataTables: true);
             try
             {
                 snapshot = snapshotService.Create("recalculate", null);

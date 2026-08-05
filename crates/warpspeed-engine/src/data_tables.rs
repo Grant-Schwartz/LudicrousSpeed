@@ -16,8 +16,7 @@ use ironcalc::base::{
 use crate::graph::CellId;
 use crate::model::{
     DataTableBenchmarkSummary, DataTableCellValue, DataTableDiagnostic, DataTableEvaluationStatus,
-    DataTableRegionInfo,
-    FormulaValueKind,
+    DataTableRegionInfo, FormulaValueKind,
 };
 
 const NUMERIC_TOLERANCE: f64 = 1e-7;
