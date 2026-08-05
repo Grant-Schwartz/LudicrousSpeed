@@ -136,6 +136,7 @@ namespace WarpSpeed.ExcelAddIn
             try
             {
                 snapshot = snapshotService.Create("recalculate", null);
+                snapshot.DataTableOverrides = dataTableConverter.ReadOverrides();
                 var response = engineClient.Run(snapshot, out _);
                 if (!response.Ok || response.Result == null)
                 {
@@ -241,6 +242,7 @@ namespace WarpSpeed.ExcelAddIn
                 var excelBaselineMs = MeasureExcelBaseline(includeExcelBaseline);
                 var warpspeedStopwatch = Stopwatch.StartNew();
                 snapshot = snapshotService.Create(mode, excelBaselineMs);
+                snapshot.DataTableOverrides = dataTableConverter.ReadOverrides();
                 var response = engineClient.Run(snapshot, out var nativeCallMs);
                 warpspeedStopwatch.Stop();
 
@@ -285,6 +287,7 @@ namespace WarpSpeed.ExcelAddIn
                 var excelBaselineMs = MeasureExcelBaseline(includeExcelBaseline);
                 var warpspeedStopwatch = Stopwatch.StartNew();
                 snapshot = snapshotService.Create(mode, excelBaselineMs);
+                snapshot.DataTableOverrides = dataTableConverter.ReadOverrides();
                 var snapshotForBackgroundCall = snapshot;
 
                 SetStatusBar("WarpSpeed is calculating in the background...");

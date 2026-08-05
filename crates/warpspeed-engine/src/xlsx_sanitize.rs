@@ -39,6 +39,10 @@ pub(crate) struct SanitizedSheet {
     xml: String,
     fallbacks: ImportFallbacks,
     data_tables: Vec<DataTableRegion>,
+    /// WS.LIVE cells reduced to their cached values. These are not fallbacks
+    /// -- the kernel recomputes them -- but they still mean the sheet XML was
+    /// rewritten and must replace the original.
+    stripped_live_cells: usize,
 }
 
 #[derive(Debug)]
@@ -70,7 +74,9 @@ pub(crate) fn sanitize_data_table_formulas(
         file.read_to_string(&mut xml)
             .map_err(|err| EngineError::WorkbookLoad(err.to_string()))?;
 
-        if !xml.contains("dataTable") {
+        // WS.LIVE cells need stripping too, and a workbook whose tables
+        // have all been converted contains no dataTable markers at all.
+        if !xml.contains("dataTable") && !contains_ignore_ascii_case(&xml, LIVE_MARKER) {
             continue;
         }
 
@@ -80,7 +86,7 @@ pub(crate) fn sanitize_data_table_formulas(
             .unwrap_or(part_name.as_str());
         let sanitized = strip_data_table_formulas_from_sheet_xml(sheet_name, &part_name, &xml);
 
-        if sanitized.fallbacks.fallback_formula_cells > 0 {
+        if sanitized.fallbacks.fallback_formula_cells > 0 || sanitized.stripped_live_cells > 0 {
             fallbacks.fallback_formula_cells += sanitized.fallbacks.fallback_formula_cells;
             fallbacks
                 .fallback_reasons
@@ -93,7 +99,9 @@ pub(crate) fn sanitize_data_table_formulas(
         }
     }
 
-    if fallbacks.is_empty() {
+    // A workbook whose tables are all converted produces no fallbacks, but
+    // its WS.LIVE cells still had to be stripped, so the rewrite is required.
+    if fallbacks.is_empty() && replacements.is_empty() {
         return Ok(None);
     }
 
@@ -117,6 +125,7 @@ pub(crate) fn strip_data_table_formulas_from_sheet_xml(
     let mut sanitized = String::with_capacity(xml.len());
     let mut fallbacks = ImportFallbacks::default();
     let mut data_tables = Vec::new();
+    let mut stripped_live_cells = 0;
     let mut cursor = 0;
 
     for captures in cell_regex.captures_iter(xml) {
@@ -130,15 +139,20 @@ pub(crate) fn strip_data_table_formulas_from_sheet_xml(
             continue;
         };
 
-        if !body_match.as_str().contains("dataTable") {
+        let body_text = body_match.as_str();
+        if !body_text.contains("dataTable") && !contains_ignore_ascii_case(body_text, LIVE_MARKER) {
             continue;
         }
 
         let cell_attrs = parse_xml_attributes(attrs_match.as_str());
         let cell_address = cell_attrs.get("r").cloned();
-        let stripped = strip_data_table_formulas_from_cell_body(body_match.as_str());
-        if stripped.formulas.is_empty() {
+        let stripped = strip_data_table_formulas_from_cell_body(body_text);
+        let body_rewritten = stripped.body != body_text;
+        if stripped.formulas.is_empty() && !body_rewritten {
             continue;
+        }
+        if stripped.formulas.is_empty() {
+            stripped_live_cells += 1;
         }
 
         sanitized.push_str(&xml[cursor..body_match.start()]);
@@ -186,11 +200,12 @@ pub(crate) fn strip_data_table_formulas_from_sheet_xml(
         let _ = full_match;
     }
 
-    if fallbacks.fallback_formula_cells == 0 {
+    if fallbacks.fallback_formula_cells == 0 && stripped_live_cells == 0 {
         return SanitizedSheet {
             xml: xml.to_string(),
             fallbacks,
             data_tables,
+            stripped_live_cells,
         };
     }
 
@@ -199,7 +214,41 @@ pub(crate) fn strip_data_table_formulas_from_sheet_xml(
         xml: sanitized,
         fallbacks,
         data_tables,
+        stripped_live_cells,
     }
+}
+
+/// Uppercase form of the live-cell function name, for case-insensitive
+/// scanning. Held as a constant so the scan never has to allocate.
+const LIVE_MARKER: &[u8] = b"WS.LIVE";
+
+/// Case-insensitive substring search that allocates nothing. The naive
+/// version -- uppercasing the haystack -- copied every sheet's XML and every
+/// cell body, which on a large workbook cost more than the whole sanitize
+/// pass it was guarding.
+fn contains_ignore_ascii_case(haystack: &str, needle_upper: &[u8]) -> bool {
+    let bytes = haystack.as_bytes();
+    if bytes.len() < needle_upper.len() {
+        return false;
+    }
+
+    bytes
+        .windows(needle_upper.len())
+        .any(|window| window.eq_ignore_ascii_case(needle_upper))
+}
+
+/// True when the `<f>` element starting at `open_end` contains a WS.LIVE
+/// call. Self-closing formula tags have no text and never qualify.
+fn formula_body_is_live_cell(body: &str, open_end: usize, open_tag: &str) -> bool {
+    if open_tag.trim_end().ends_with("/>") {
+        return false;
+    }
+
+    let Some(relative_close) = body[open_end..].find("</f>") else {
+        return false;
+    };
+
+    contains_ignore_ascii_case(&body[open_end..open_end + relative_close], LIVE_MARKER)
 }
 
 fn strip_data_table_formulas_from_cell_body(body: &str) -> StrippedCellBody {
@@ -216,14 +265,28 @@ fn strip_data_table_formulas_from_cell_body(body: &str) -> StrippedCellBody {
         let open_tag = &body[start..open_end];
         let attrs = parse_xml_attributes(open_tag);
 
-        if attrs.get("t").map(String::as_str) != Some("dataTable") {
+        let is_data_table = attrs.get("t").map(String::as_str) == Some("dataTable");
+
+        // A WS.LIVE cell is one WarpSpeed already drives. Its formula is a
+        // function IronCalc has never heard of, so leaving it in place would
+        // make the cell an unsupported_formula fallback and -- through
+        // dependency tainting -- drag everything downstream out of the
+        // writeback-safe set, making coverage *worse* after conversion.
+        // Strip it to its cached value, exactly as a native data table cell
+        // is stripped; the value it should display is recomputed by the
+        // kernel from the host's table override.
+        let is_live_cell = !is_data_table && formula_body_is_live_cell(body, open_end, open_tag);
+
+        if !is_data_table && !is_live_cell {
             stripped.push_str(&body[cursor..open_end]);
             cursor = open_end;
             continue;
         }
 
         stripped.push_str(&body[cursor..start]);
-        formulas.push(attrs);
+        if is_data_table {
+            formulas.push(attrs);
+        }
         if open_tag.trim_end().ends_with("/>") {
             cursor = open_end;
         } else if let Some(relative_close_start) = body[open_end..].find("</f>") {

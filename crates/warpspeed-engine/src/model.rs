@@ -48,6 +48,40 @@ pub struct WorkbookSnapshot {
     /// warm runs the same way a file-backed snapshot is.
     #[serde(default)]
     pub inline_workbook: Option<InlineWorkbook>,
+    /// Data tables the host has replaced with WarpSpeed live cells.
+    ///
+    /// Converting a table deletes its `{=TABLE()}` array marker, which is the
+    /// only thing the engine can discover a native table from. Without these
+    /// the engine would find no table there, compute nothing, and the live
+    /// cells would never update again. The host persists these definitions
+    /// when it converts and replays them on every snapshot.
+    #[serde(default)]
+    pub data_table_overrides: Vec<DataTableOverride>,
+}
+
+/// A data table declared by the host rather than discovered in the file.
+/// Mirrors the OOXML `dataTable` formula attributes so it can build the same
+/// region a native table would have produced.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataTableOverride {
+    pub sheet_name: String,
+    /// Body range, e.g. `F289:J293`.
+    pub range_address: String,
+    /// Top-left cell of the body; the OOXML `dataTable` formula lives here.
+    #[serde(default)]
+    pub anchor_address: String,
+    /// OOXML `r1` -- the column-axis input cell.
+    #[serde(default)]
+    pub column_input_cell: Option<String>,
+    /// OOXML `r2` -- the row-axis input cell, two-variable tables only.
+    #[serde(default)]
+    pub row_input_cell: Option<String>,
+    /// OOXML `dt2D`.
+    #[serde(default)]
+    pub is_two_dimensional: bool,
+    /// OOXML `dtr` -- row-oriented when true.
+    #[serde(default)]
+    pub dtr: bool,
 }
 
 impl WorkbookSnapshot {
@@ -333,12 +367,17 @@ pub struct DataTableCellValue {
     /// Identifies the owning table (`Sheet!Range`), so a host can convert or
     /// restore one table at a time.
     pub table_id: String,
-    /// True when this table's kernel output matched Excel's cached values
-    /// exactly. False means the two disagreed -- which on real models is
-    /// usually Excel's cache being stale rather than the kernel being wrong,
-    /// but the distinction matters before writing values into a live model,
-    /// so it travels with the value rather than only in aggregate counts.
-    pub matched_excel_cache: bool,
+    /// Whether this value matched Excel's cached one.
+    ///
+    /// `Some(true)` matched; `Some(false)` disagreed -- which on real models
+    /// is usually Excel's cache being stale rather than the kernel being
+    /// wrong, but the distinction matters before writing values into a live
+    /// model, so it travels with the value rather than only in aggregate
+    /// counts. `None` means there was nothing to compare against: the table
+    /// was declared by the host because it has already been converted, so the
+    /// "cached" values in those cells are WarpSpeed's own previous output.
+    /// Comparing against them would be self-confirming, not validation.
+    pub matched_excel_cache: Option<bool>,
     pub value_kind: FormulaValueKind,
     pub value: serde_json::Value,
 }

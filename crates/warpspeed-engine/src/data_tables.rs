@@ -16,7 +16,7 @@ use ironcalc::base::{
 use crate::graph::CellId;
 use crate::model::{
     DataTableBenchmarkSummary, DataTableCellValue, DataTableDiagnostic, DataTableEvaluationStatus,
-    DataTableRegionInfo, FormulaValueKind,
+    DataTableOverride, DataTableRegionInfo, FormulaValueKind,
 };
 
 const NUMERIC_TOLERANCE: f64 = 1e-7;
@@ -83,6 +83,10 @@ pub(crate) struct DataTableRegion {
     pub is_two_dimensional: bool,
     pub dtr: bool,
     pub unsupported_reason: Option<String>,
+    /// True when the host declared this table because it has already been
+    /// converted to live cells. Its body no longer holds Excel-computed
+    /// values, so there is nothing meaningful to validate the kernel against.
+    pub from_override: bool,
 }
 
 impl DataTableRegion {
@@ -121,6 +125,9 @@ struct ScenarioCounts {
     validated: usize,
     mismatched: usize,
     stale_cache: usize,
+    /// Cells evaluated for a host-declared (already converted) table, where
+    /// there is no Excel value to compare against.
+    evaluated_without_comparison: usize,
     unsupported: usize,
     diagnostics: Vec<DataTableDiagnostic>,
     values: Vec<DataTableCellValue>,
@@ -221,7 +228,40 @@ pub(crate) fn build_data_table_region(
         is_two_dimensional,
         dtr,
         unsupported_reason,
+        from_override: false,
     }
+}
+
+/// Rebuilds a region for a table the host has already converted to live
+/// cells. Identical to a discovered table apart from `from_override`, which
+/// suppresses validation against body values that are now WarpSpeed's own
+/// output rather than Excel's.
+pub(crate) fn build_data_table_region_from_override(
+    override_definition: &DataTableOverride,
+) -> DataTableRegion {
+    let anchor = if override_definition.anchor_address.is_empty() {
+        override_definition
+            .range_address
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .to_string()
+    } else {
+        override_definition.anchor_address.clone()
+    };
+
+    let mut region = build_data_table_region(
+        &override_definition.sheet_name,
+        "<host-override>",
+        &anchor,
+        &override_definition.range_address,
+        override_definition.column_input_cell.as_deref(),
+        override_definition.row_input_cell.as_deref(),
+        override_definition.is_two_dimensional,
+        override_definition.dtr,
+    );
+    region.from_override = true;
+    region
 }
 
 pub(crate) fn summarize_data_tables(
@@ -769,19 +809,30 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
         .zip(expected_values.iter())
         .zip(scenarios.iter())
     {
-        let matched = values_match(actual, expected);
-        if matched {
-            counts.validated += 1;
+        // An override table's body holds WarpSpeed's own previous output, not
+        // anything Excel computed, so comparing against it would confirm
+        // nothing. Count those cells as evaluated and leave the comparison
+        // unreported rather than manufacturing a pass.
+        let matched = if table.from_override {
+            None
         } else {
-            counts.mismatched += 1;
-            if first_mismatch.is_none() {
-                first_mismatch = Some(format!(
-                    "First mismatch at {}!{}: expected {}, got {}.",
-                    scenario.output_cell.sheet_name,
-                    scenario.output_cell.address,
-                    format_comparable_value(expected),
-                    format_comparable_value(actual)
-                ));
+            Some(values_match(actual, expected))
+        };
+
+        match matched {
+            None => counts.evaluated_without_comparison += 1,
+            Some(true) => counts.validated += 1,
+            Some(false) => {
+                counts.mismatched += 1;
+                if first_mismatch.is_none() {
+                    first_mismatch = Some(format!(
+                        "First mismatch at {}!{}: expected {}, got {}.",
+                        scenario.output_cell.sheet_name,
+                        scenario.output_cell.address,
+                        format_comparable_value(expected),
+                        format_comparable_value(actual)
+                    ));
+                }
             }
         }
 
@@ -3740,6 +3791,7 @@ impl ScenarioCounts {
         self.validated += other.validated;
         self.mismatched += other.mismatched;
         self.stale_cache += other.stale_cache;
+        self.evaluated_without_comparison += other.evaluated_without_comparison;
         self.unsupported += other.unsupported;
         self.diagnostics.extend(other.diagnostics);
         self.values.extend(other.values);

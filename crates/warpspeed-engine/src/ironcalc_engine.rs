@@ -9,15 +9,16 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::data_tables::{
-    evaluate_data_tables, evaluate_iterative_formula_cells, summarize_data_tables, DataTableRegion,
+    build_data_table_region_from_override, evaluate_data_tables, evaluate_iterative_formula_cells,
+    summarize_data_tables, DataTableRegion,
 };
 use crate::engine::CalcEngine;
 use crate::graph::{build_dependency_graph, CellId, DependencyGraph, DirtySummary};
 use crate::model::{
     AnalysisSummary, BenchmarkSummary, CalcMode, CalcPlan, CalcResult, CalculationStrategy,
     ChangedCell, DataTableBenchmarkSummary, DataTableCellValue, DataTableEvaluationStatus,
-    EngineError, ExcelWritebackPlan, FallbackDetail, FallbackReason, FormulaCoverage,
-    FormulaValueKind, FormulaWritebackCell, InlineWorkbook, WorkbookSnapshot,
+    DataTableOverride, EngineError, ExcelWritebackPlan, FallbackDetail, FallbackReason,
+    FormulaCoverage, FormulaValueKind, FormulaWritebackCell, InlineWorkbook, WorkbookSnapshot,
     WritebackIssueSummary, WritebackMode,
 };
 use crate::xlsx_sanitize::{
@@ -462,6 +463,11 @@ fn load_build_evaluate(snapshot: &WorkbookSnapshot) -> Result<LoadedWorkbook, En
             )?;
             (model, import_fallbacks, data_tables, workbook_hash)
         };
+    // Tables the host has already converted no longer carry a {=TABLE()}
+    // marker to discover, so they arrive as overrides instead. Merge them in,
+    // preferring a discovered table if one somehow still exists at the same
+    // range (a table that was restored but whose override wasn't cleared).
+    let data_tables = merge_data_table_overrides(data_tables, &snapshot.data_table_overrides);
     let load_ms = load_started.elapsed().as_millis();
 
     let graph_started = Instant::now();
@@ -713,15 +719,25 @@ fn build_writeback_plan(
     if !data_table_cells.is_empty() {
         let matched = data_table_cells
             .iter()
-            .filter(|cell| cell.matched_excel_cache)
+            .filter(|cell| cell.matched_excel_cache == Some(true))
+            .count();
+        let differed = data_table_cells
+            .iter()
+            .filter(|cell| cell.matched_excel_cache == Some(false))
+            .count();
+        let uncompared = data_table_cells
+            .iter()
+            .filter(|cell| cell.matched_excel_cache.is_none())
             .count();
         notes.push(format!(
-            "Rust computed {} data table output cells ({} matched Excel's cached values, {} did \
-             not -- on real models a mismatch is usually a stale Excel cache rather than a kernel \
-             error, but verify before driving those cells live).",
+            "Rust computed {} data table output cells: {} matched Excel's cached values, {} \
+             differed (usually a stale Excel cache rather than a kernel error, but verify before \
+             driving those cells live), {} had no Excel value to compare against because the table \
+             is already driven by WarpSpeed.",
             data_table_cells.len(),
             matched,
-            data_table_cells.len() - matched
+            differed,
+            uncompared
         ));
     }
 
@@ -1005,27 +1021,57 @@ fn benchmark_summary(
     }
 }
 
+/// Adds host-declared tables to those discovered in the file. A discovered
+/// table always wins for the same id: it still has its native array formula,
+/// so its body holds real Excel values worth validating against, whereas an
+/// override's body holds WarpSpeed's own output.
+fn merge_data_table_overrides(
+    mut discovered: Vec<DataTableRegion>,
+    overrides: &[DataTableOverride],
+) -> Vec<DataTableRegion> {
+    if overrides.is_empty() {
+        return discovered;
+    }
+
+    let known = discovered
+        .iter()
+        .map(|table| table.id.clone())
+        .collect::<HashSet<_>>();
+    for override_definition in overrides {
+        let region = build_data_table_region_from_override(override_definition);
+        if !known.contains(&region.id) {
+            discovered.push(region);
+        }
+    }
+
+    discovered
+}
+
 fn load_model_with_import_fallbacks(
     workbook_path: &str,
     workbook_hash: &str,
     locale: &str,
     timezone: &str,
 ) -> Result<(Model<'static>, ImportFallbacks, Vec<DataTableRegion>), EngineError> {
-    match load_from_xlsx(workbook_path, locale, timezone, CACHE_LANGUAGE) {
-        Ok(model) => Ok((model, ImportFallbacks::default(), Vec::new())),
-        Err(err) if err.to_string().contains("data table formulas") => {
-            let Some(sanitized) = sanitize_data_table_formulas(workbook_path, workbook_hash)?
-            else {
-                return Err(EngineError::WorkbookLoad(err.to_string()));
-            };
-            let sanitized_path = sanitized.path.to_string_lossy().to_string();
-            let loaded = load_from_xlsx(&sanitized_path, locale, timezone, CACHE_LANGUAGE)
-                .map_err(|load_err| EngineError::WorkbookLoad(load_err.to_string()));
-            remove_sanitized_workbook(&sanitized.path);
-            loaded.map(|model| (model, sanitized.fallbacks, sanitized.data_tables))
-        }
-        Err(err) => Err(EngineError::WorkbookLoad(err.to_string())),
+    // Sanitize up front rather than only in response to a load failure. A
+    // native data table formula makes IronCalc's import fail outright, so the
+    // old error-triggered path caught those -- but a WS.LIVE cell imports
+    // perfectly happily as an unknown function, so waiting for an error would
+    // never strip it, leaving every converted cell an unsupported_formula
+    // fallback that taints everything downstream. sanitize returns None when
+    // there is nothing to strip, so an ordinary workbook is unaffected beyond
+    // a cheap string scan of each sheet.
+    if let Some(sanitized) = sanitize_data_table_formulas(workbook_path, workbook_hash)? {
+        let sanitized_path = sanitized.path.to_string_lossy().to_string();
+        let loaded = load_from_xlsx(&sanitized_path, locale, timezone, CACHE_LANGUAGE)
+            .map_err(|load_err| EngineError::WorkbookLoad(load_err.to_string()));
+        remove_sanitized_workbook(&sanitized.path);
+        return loaded.map(|model| (model, sanitized.fallbacks, sanitized.data_tables));
     }
+
+    load_from_xlsx(workbook_path, locale, timezone, CACHE_LANGUAGE)
+        .map(|model| (model, ImportFallbacks::default(), Vec::new()))
+        .map_err(|err| EngineError::WorkbookLoad(err.to_string()))
 }
 
 /// Builds an IronCalc model directly from cell data already collected by the
@@ -1261,6 +1307,7 @@ mod tests {
             timezone: "UTC".to_string(),
             language: "en".to_string(),
             inline_workbook: None,
+            data_table_overrides: Vec::new(),
         };
 
         assert!(snapshot.validate().is_err());

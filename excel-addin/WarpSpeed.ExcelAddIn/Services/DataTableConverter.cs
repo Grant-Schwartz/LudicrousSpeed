@@ -147,6 +147,78 @@ namespace WarpSpeed.ExcelAddIn.Services
             }
         }
 
+        /// <summary>
+        /// Reads back every table this workbook has had converted, so the
+        /// definitions can ride along on each snapshot. Without this the
+        /// engine finds no table where a converted one used to be, computes
+        /// nothing for it, and its live cells never update again.
+        /// </summary>
+        public List<DataTableOverride> ReadOverrides()
+        {
+            var overrides = new List<DataTableOverride>();
+            try
+            {
+                dynamic excel = ExcelDnaUtil.Application;
+                Excel.Workbook workbook = excel.ActiveWorkbook;
+                Excel.Worksheet? metadata = FindWorksheet(workbook, MetadataSheetName);
+                if (metadata == null)
+                {
+                    return overrides;
+                }
+
+                var row = 2; // row 1 is the header
+                while (true)
+                {
+                    var tableId = CellText(metadata, row, 1);
+                    if (string.IsNullOrWhiteSpace(tableId))
+                    {
+                        break;
+                    }
+
+                    var sheetName = CellText(metadata, row, 2);
+                    var rangeAddress = CellText(metadata, row, 3);
+                    if (!string.IsNullOrWhiteSpace(sheetName)
+                        && !string.IsNullOrWhiteSpace(rangeAddress))
+                    {
+                        var columnInput = CellText(metadata, row, 4);
+                        var rowInput = CellText(metadata, row, 5);
+                        overrides.Add(new DataTableOverride
+                        {
+                            SheetName = sheetName,
+                            RangeAddress = rangeAddress,
+                            AnchorAddress = CellText(metadata, row, 8),
+                            ColumnInputCell = string.IsNullOrWhiteSpace(columnInput) ? null : columnInput,
+                            RowInputCell = string.IsNullOrWhiteSpace(rowInput) ? null : rowInput,
+                            IsTwoDimensional = CellText(metadata, row, 7) == "1",
+                            // Excel only exposes dtr for one-variable tables;
+                            // a two-variable table always uses both axes.
+                            Dtr = CellText(metadata, row, 7) == "1",
+                        });
+                    }
+
+                    row++;
+                }
+            }
+            catch (Exception)
+            {
+                // Overrides are an optimization for already-converted tables;
+                // a failure to read them must not take down the whole run.
+            }
+
+            return overrides;
+        }
+
+        /// <summary>
+        /// Forgets a restored table so its definition stops being replayed.
+        /// </summary>
+        private static void ClearMetadataRow(Excel.Worksheet metadata, int row)
+        {
+            for (var column = 1; column <= 8; column++)
+            {
+                ((Excel.Range)metadata.Cells[row, column]).ClearContents();
+            }
+        }
+
         public RestoreResult RestoreNativeTables()
         {
             var result = new RestoreResult();
@@ -181,6 +253,10 @@ namespace WarpSpeed.ExcelAddIn.Services
                     try
                     {
                         RestoreOne(workbook, metadata, row);
+                        // The native table is back, so the engine will
+                        // discover it again; replaying the override would now
+                        // shadow the real thing.
+                        ClearMetadataRow(metadata, row);
                         result.Restored++;
                     }
                     catch (Exception ex)
@@ -250,6 +326,10 @@ namespace WarpSpeed.ExcelAddIn.Services
             ((Excel.Range)metadata.Cells[row, 5]).Value2 = region.RowInputCell ?? "";
             ((Excel.Range)metadata.Cells[row, 6]).Value2 =
                 DateTime.Now.ToString("u", CultureInfo.InvariantCulture);
+            // dt2D/dtr are needed to rebuild the region shape engine-side on
+            // every later run, not just to restore the native table.
+            ((Excel.Range)metadata.Cells[row, 7]).Value2 = region.IsTwoDimensional ? 1d : 0d;
+            ((Excel.Range)metadata.Cells[row, 8]).Value2 = region.AnchorAddress;
         }
 
         private static int NextMetadataRow(Excel.Worksheet metadata)
@@ -279,6 +359,8 @@ namespace WarpSpeed.ExcelAddIn.Services
             ((Excel.Range)sheet.Cells[1, 4]).Value2 = "column_input_cell";
             ((Excel.Range)sheet.Cells[1, 5]).Value2 = "row_input_cell";
             ((Excel.Range)sheet.Cells[1, 6]).Value2 = "converted_at";
+            ((Excel.Range)sheet.Cells[1, 7]).Value2 = "is_two_dimensional";
+            ((Excel.Range)sheet.Cells[1, 8]).Value2 = "anchor_address";
             sheet.Visible = Excel.XlSheetVisibility.xlSheetHidden;
             return sheet;
         }

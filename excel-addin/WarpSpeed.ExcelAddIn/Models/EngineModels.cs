@@ -42,6 +42,9 @@ namespace WarpSpeed.ExcelAddIn.Models
         [JsonProperty("inline_workbook")]
         public InlineWorkbook? InlineWorkbook { get; set; }
 
+        [JsonProperty("data_table_overrides")]
+        public List<DataTableOverride> DataTableOverrides { get; set; } = new List<DataTableOverride>();
+
         [JsonIgnore]
         public long SnapshotSaveMs { get; set; }
 
@@ -346,6 +349,36 @@ namespace WarpSpeed.ExcelAddIn.Models
     /// cells and put it back. ColumnInputCell/RowInputCell are the two
     /// arguments Excel's Data Table dialog takes.
     /// </summary>
+    /// <summary>
+    /// A data table the host has replaced with live cells. Converting deletes
+    /// the {=TABLE()} marker the engine discovers tables from, so these
+    /// definitions must be replayed on every snapshot or the engine will find
+    /// no table there and the live cells will stop updating.
+    /// </summary>
+    internal sealed class DataTableOverride
+    {
+        [JsonProperty("sheet_name")]
+        public string SheetName { get; set; } = "";
+
+        [JsonProperty("range_address")]
+        public string RangeAddress { get; set; } = "";
+
+        [JsonProperty("anchor_address")]
+        public string AnchorAddress { get; set; } = "";
+
+        [JsonProperty("column_input_cell")]
+        public string? ColumnInputCell { get; set; }
+
+        [JsonProperty("row_input_cell")]
+        public string? RowInputCell { get; set; }
+
+        [JsonProperty("is_two_dimensional")]
+        public bool IsTwoDimensional { get; set; }
+
+        [JsonProperty("dtr")]
+        public bool Dtr { get; set; }
+    }
+
     internal sealed class DataTableRegionInfo
     {
         [JsonProperty("table_id")]
@@ -491,8 +524,13 @@ namespace WarpSpeed.ExcelAddIn.Models
         [JsonProperty("table_id")]
         public string TableId { get; set; } = "";
 
+        /// <summary>
+        /// Null when there was no Excel value to compare against, because the
+        /// table is already driven by WarpSpeed and its "cached" body holds
+        /// WarpSpeed's own previous output.
+        /// </summary>
         [JsonProperty("matched_excel_cache")]
-        public bool MatchedExcelCache { get; set; }
+        public bool? MatchedExcelCache { get; set; }
 
         [JsonProperty("value_kind")]
         public string ValueKind { get; set; } = "";

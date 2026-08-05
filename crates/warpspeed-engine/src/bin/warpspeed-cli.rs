@@ -109,6 +109,7 @@ fn main() {
         timezone: "UTC".to_string(),
         language: "en".to_string(),
         inline_workbook: None,
+        data_table_overrides: Vec::new(),
     };
 
     let engine = WarpSpeedEngine::new();

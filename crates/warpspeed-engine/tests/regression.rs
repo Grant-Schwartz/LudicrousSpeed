@@ -7,8 +7,8 @@ use ironcalc::{
     export::save_to_xlsx,
 };
 use warpspeed_engine::{
-    CalcMode, ChangedCell, DataTableEvaluationStatus, FormulaValueKind, InlineCell,
-    InlineDefinedName, InlineSheet, InlineWorkbook, WarpSpeedEngine, WorkbookSnapshot,
+    CalcMode, ChangedCell, DataTableEvaluationStatus, DataTableOverride, FormulaValueKind,
+    InlineCell, InlineDefinedName, InlineSheet, InlineWorkbook, WarpSpeedEngine, WorkbookSnapshot,
     WritebackMode,
 };
 use zip::{write::FileOptions, ZipArchive, ZipWriter};
@@ -76,6 +76,7 @@ fn rejects_missing_workbook_path() {
         timezone: "UTC".to_string(),
         language: "en".to_string(),
         inline_workbook: None,
+        data_table_overrides: Vec::new(),
     };
 
     let err = WarpSpeedEngine::new().run(&snapshot).unwrap_err();
@@ -347,6 +348,7 @@ fn snapshot_for(
         timezone: "UTC".to_string(),
         language: "en".to_string(),
         inline_workbook: None,
+        data_table_overrides: Vec::new(),
     }
 }
 
@@ -577,6 +579,7 @@ fn inline_snapshot(
         timezone: "UTC".to_string(),
         language: "en".to_string(),
         inline_workbook: Some(inline),
+        data_table_overrides: Vec::new(),
     }
 }
 
@@ -722,6 +725,7 @@ fn inline_workbook_id_can_be_warmed_with_changed_cells_on_a_later_run() {
         timezone: "UTC".to_string(),
         language: "en".to_string(),
         inline_workbook: None,
+        data_table_overrides: Vec::new(),
     };
     let warm_result = engine.run(&warm_snapshot).unwrap();
     assert_eq!(
@@ -811,5 +815,119 @@ fn changed_cell_on_unknown_sheet_does_not_fail_the_run() {
         warm_result.writeback.cells.len(),
         expected_cells,
         "the rest of the workbook should still be evaluated normally"
+    );
+}
+
+/// Rewrites a data table's body the way the Excel host's "Convert to Live"
+/// does: the {=TABLE()} array marker is gone and every body cell holds a
+/// WS.LIVE formula pointing at itself.
+fn convert_data_table_to_live_cells(source_path: &Path, output_path: &Path) {
+    let source = File::open(source_path).unwrap();
+    let mut archive = ZipArchive::new(source).unwrap();
+    let output = File::create(output_path).unwrap();
+    let mut writer = ZipWriter::new(output);
+
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index).unwrap();
+        let name = file.name().to_string();
+        let options = FileOptions::default()
+            .compression_method(file.compression())
+            .last_modified_time(file.last_modified());
+
+        if name.ends_with('/') {
+            writer.add_directory(name, options).unwrap();
+            continue;
+        }
+
+        writer.start_file(name.clone(), options).unwrap();
+        if name == "xl/worksheets/sheet1.xml" {
+            let mut xml = String::new();
+            file.read_to_string(&mut xml).unwrap();
+            let mut xml = xml.replace(
+                r#"<f t="dataTable" ref="C3:D4" dt2D="1" dtr="1" r1="A1" r2="A2" ca="1"/>"#,
+                r#"<f>WS.LIVE("Sheet1!C3")</f>"#,
+            );
+            for address in ["D3", "C4", "D4"] {
+                xml = xml.replace(
+                    &format!(r#"<c r="{address}">"#),
+                    &format!(r#"<c r="{address}"><f>WS.LIVE("Sheet1!{address}")</f>"#),
+                );
+            }
+            writer.write_all(xml.as_bytes()).unwrap();
+        } else {
+            io::copy(&mut file, &mut writer).unwrap();
+        }
+    }
+
+    writer.finish().unwrap();
+}
+
+#[test]
+fn converted_data_table_is_still_computed_from_a_host_override() {
+    let native = create_data_table_fixture();
+    let converted = native.with_file_name("converted-data-table-model.xlsx");
+    convert_data_table_to_live_cells(&native, &converted);
+
+    // Without an override the engine has nothing to go on: the {=TABLE()}
+    // marker it discovers tables from is gone.
+    let mut blind = snapshot_for(&converted, CalcMode::Recalculate, None);
+    blind.evaluate_data_tables = true;
+    blind.workbook_id = Some("converted-blind".to_string());
+    let blind_result = WarpSpeedEngine::new().run(&blind).unwrap();
+    assert_eq!(
+        blind_result.benchmark.data_tables.data_table_count, 0,
+        "a converted table leaves no marker to discover"
+    );
+
+    // With the override the host persisted at conversion time, the engine
+    // rebuilds the region and computes the table again -- this is the loop
+    // that has to close for live data tables to keep updating.
+    let mut declared = snapshot_for(&converted, CalcMode::Recalculate, None);
+    declared.evaluate_data_tables = true;
+    declared.workbook_id = Some("converted-override".to_string());
+    declared.data_table_overrides = vec![DataTableOverride {
+        sheet_name: "Sheet1".to_string(),
+        range_address: "C3:D4".to_string(),
+        anchor_address: "C3".to_string(),
+        column_input_cell: Some("A1".to_string()),
+        row_input_cell: Some("A2".to_string()),
+        is_two_dimensional: true,
+        dtr: true,
+    }];
+
+    let result = WarpSpeedEngine::new().run(&declared).unwrap();
+    assert_eq!(
+        result.benchmark.data_tables.data_table_count, 1,
+        "the host-declared table must be picked up"
+    );
+    assert_eq!(
+        result.writeback.data_table_cells.len(),
+        4,
+        "all four body cells must get computed values"
+    );
+
+    // The body now holds WarpSpeed's own previous output, so there is nothing
+    // meaningful to validate against and the comparison must be reported as
+    // absent rather than as a pass.
+    assert!(
+        result
+            .writeback
+            .data_table_cells
+            .iter()
+            .all(|cell| cell.matched_excel_cache.is_none()),
+        "an override table has no Excel value to compare against"
+    );
+
+    // The WS.LIVE formulas must not become unsupported_formula fallbacks --
+    // that would taint everything downstream and make coverage worse after
+    // converting than before.
+    assert!(
+        !result
+            .analysis
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason.message.to_ascii_uppercase().contains("WS.LIVE")),
+        "WS.LIVE cells must not be reported as unsupported formulas: {:?}",
+        result.analysis.fallback_reasons
     );
 }
