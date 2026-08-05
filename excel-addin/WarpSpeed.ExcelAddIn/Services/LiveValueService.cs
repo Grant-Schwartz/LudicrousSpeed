@@ -60,6 +60,56 @@ namespace WarpSpeed.ExcelAddIn.Services
             return (sheet + "!" + cell).ToUpperInvariant();
         }
 
+        /// <summary>
+        /// Builds a registry key from a worksheet reference, so
+        /// <c>=WS.LIVE(E2)</c> works the way an Excel user expects rather than
+        /// requiring the sheet-qualified string form. Excel hands the UDF an
+        /// ExcelReference (zero-indexed) only when the argument is declared
+        /// AllowReference; xlSheetNm resolves it to "[Book.xlsx]Sheet", whose
+        /// workbook prefix is dropped since the registry is keyed by sheet.
+        /// </summary>
+        public static string AddressFromReference(ExcelReference reference)
+        {
+            try
+            {
+                var sheetName =
+                    Convert.ToString(XlCall.Excel(XlCall.xlSheetNm, reference), CultureInfo.InvariantCulture)
+                    ?? "";
+                var bracket = sheetName.LastIndexOf(']');
+                if (bracket >= 0)
+                {
+                    sheetName = sheetName.Substring(bracket + 1);
+                }
+
+                if (sheetName.Length == 0)
+                {
+                    return "";
+                }
+
+                var column = ColumnLetters(reference.ColumnFirst + 1);
+                var row = reference.RowFirst + 1;
+                return NormalizeAddress(sheetName + "!" + column + row.ToString(CultureInfo.InvariantCulture));
+            }
+            catch (Exception)
+            {
+                return "";
+            }
+        }
+
+        private static string ColumnLetters(int oneBasedColumn)
+        {
+            var letters = "";
+            var remaining = oneBasedColumn;
+            while (remaining > 0)
+            {
+                var offset = (remaining - 1) % 26;
+                letters = (char)('A' + offset) + letters;
+                remaining = (remaining - 1) / 26;
+            }
+
+            return letters;
+        }
+
         public static CellObservable GetOrCreate(string normalizedAddress)
         {
             return Cells.GetOrAdd(normalizedAddress, _ => new CellObservable());
@@ -266,10 +316,31 @@ namespace WarpSpeed.ExcelAddIn.Services
             Name = "WS.LIVE",
             Description = "Displays the value WarpSpeed computed for a model cell, updated live.")]
         public static object WsLive(
-            [ExcelArgument(Name = "address", Description = "Cell to mirror, e.g. \"Sheet1!A1\"")]
-            string address)
+            [ExcelArgument(
+                Name = "cell",
+                Description = "Cell to mirror: a reference like E2, or text like \"Sheet1!E2\"",
+                AllowReference = true)]
+            object cell)
         {
-            var key = LiveValueService.NormalizeAddress(address);
+            // AllowReference means an unquoted argument arrives as an
+            // ExcelReference rather than the referenced cell's *value*, which
+            // is what =WS.LIVE(E2) needs -- without it Excel passes E2's
+            // contents and the lookup is for an address named "45378".
+            string key;
+            if (cell is ExcelReference reference)
+            {
+                key = LiveValueService.AddressFromReference(reference);
+                if (key.Length == 0)
+                {
+                    return ExcelError.ExcelErrorRef;
+                }
+            }
+            else
+            {
+                key = LiveValueService.NormalizeAddress(
+                    Convert.ToString(cell, CultureInfo.InvariantCulture) ?? "");
+            }
+
             if (key.Length == 0)
             {
                 return ExcelError.ExcelErrorValue;
