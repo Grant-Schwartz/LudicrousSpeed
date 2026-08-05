@@ -73,11 +73,37 @@ namespace WarpSpeed.ExcelAddIn.Services
         /// </summary>
         public static void PublishAll(IEnumerable<KeyValuePair<string, object>> values)
         {
+            var published = 0;
             foreach (var entry in values)
             {
                 GetOrCreate(NormalizeAddress(entry.Key)).Publish(entry.Value);
+                published++;
+            }
+
+            if (published == 0)
+            {
+                return;
+            }
+
+            // Not every cell is publishable: cells that evaluate to an error
+            // (e.g. functions IronCalc doesn't implement, like XIRR), cells
+            // inside or downstream of a fallback region, and data table
+            // outputs are all deliberately excluded from the writeback-safe
+            // set. Without this, a WS.LIVE formula pointed at one of those
+            // sits at #N/A forever, indistinguishable from "still waiting for
+            // the first run" -- which is a genuinely confusing failure.
+            // Anything still valueless after a publish cycle gets told so.
+            // Only ever touches cells that have never received a value, so a
+            // real value from an earlier run is never clobbered.
+            foreach (var cell in Cells.Values)
+            {
+                cell.PublishIfNeverSet(NotPublishedMessage);
             }
         }
+
+        internal const string NotPublishedMessage =
+            "#not-published - WarpSpeed has no trusted value for this cell "
+            + "(it evaluates to an error, or sits in/downstream of a fallback region)";
 
         public static int WatchedCellCount => Cells.Count;
 
@@ -164,6 +190,24 @@ namespace WarpSpeed.ExcelAddIn.Services
             {
                 observer.OnNext(value);
             }
+        }
+
+        /// <summary>
+        /// Publishes <paramref name="value"/> only if this cell has never
+        /// received one, so an explanatory marker can be delivered to
+        /// never-published addresses without overwriting real results.
+        /// </summary>
+        public void PublishIfNeverSet(object value)
+        {
+            lock (gate)
+            {
+                if (hasValue)
+                {
+                    return;
+                }
+            }
+
+            Publish(value);
         }
 
         internal string Describe()
