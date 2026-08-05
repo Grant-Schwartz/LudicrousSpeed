@@ -329,7 +329,7 @@ namespace WarpSpeed.ExcelAddIn.Services
             // dt2D/dtr are needed to rebuild the region shape engine-side on
             // every later run, not just to restore the native table.
             ((Excel.Range)metadata.Cells[row, 7]).Value2 = region.IsTwoDimensional ? 1d : 0d;
-            ((Excel.Range)metadata.Cells[row, 8]).Value2 = region.AnchorAddress;
+            ((Excel.Range)metadata.Cells[row, 8]).Value2 = AnchorOf(region.RangeAddress);
         }
 
         private static int NextMetadataRow(Excel.Worksheet metadata)
@@ -405,6 +405,17 @@ namespace WarpSpeed.ExcelAddIn.Services
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Top-left cell of a body range -- where Excel keeps the dataTable
+        /// formula. Derived rather than carried on DataTableRegionInfo, since
+        /// it is always just the first half of the range.
+        /// </summary>
+        private static string AnchorOf(string rangeAddress)
+        {
+            var colon = rangeAddress.IndexOf(':');
+            return colon < 0 ? rangeAddress : rangeAddress.Substring(0, colon);
         }
 
         private static string EscapeForFormula(string sheetName)
