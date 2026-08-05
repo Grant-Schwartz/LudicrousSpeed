@@ -45,7 +45,7 @@ namespace WarpSpeed.ExcelAddIn.Services
             sheet.Range["B7"].Value2 = result.Analysis.Coverage.SupportedFormulaCells;
             sheet.Range["A8"].Value2 = "Fallback cells";
             sheet.Range["B8"].Value2 = result.Analysis.Coverage.FallbackFormulaCells;
-            sheet.Range["A10"].Value2 = "Excel baseline ms";
+            sheet.Range["A10"].Value2 = "Excel baseline ms (full rebuild, data tables forced on)";
             WriteValue(sheet, "B10", hostMetrics.ExcelBaselineMs);
             sheet.Range["A11"].Value2 = "WarpSpeed end-to-end ms";
             sheet.Range["B11"].Value2 = hostMetrics.WarpSpeedEndToEndMs;

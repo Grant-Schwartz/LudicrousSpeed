@@ -511,6 +511,17 @@ namespace WarpSpeed.ExcelAddIn
             }
         }
 
+        /// <summary>
+        /// Times a full Excel rebuild, with data tables forced on.
+        ///
+        /// Calculation mode has to be set to fully Automatic first. Real
+        /// models routinely sit in xlCalculationSemiautomatic ("automatic
+        /// except data tables") precisely because their tables are too slow to
+        /// tolerate -- ALMS_v11 ships that way. Measuring a baseline in that
+        /// mode silently skips the most expensive thing in the workbook and
+        /// compares WarpSpeed-with-tables against Excel-without-them, which
+        /// flatters the result and measures nothing useful.
+        /// </summary>
         private static long? MeasureExcelBaseline(bool includeExcelBaseline)
         {
             if (!includeExcelBaseline)
@@ -519,10 +530,27 @@ namespace WarpSpeed.ExcelAddIn
             }
 
             dynamic excel = ExcelDnaUtil.Application;
-            var stopwatch = Stopwatch.StartNew();
-            excel.CalculateFullRebuild();
-            stopwatch.Stop();
-            return stopwatch.ElapsedMilliseconds;
+            var previousCalculation = excel.Calculation;
+            try
+            {
+                excel.Calculation = Excel.XlCalculation.xlCalculationAutomatic;
+                var stopwatch = Stopwatch.StartNew();
+                excel.CalculateFullRebuild();
+                stopwatch.Stop();
+                return stopwatch.ElapsedMilliseconds;
+            }
+            finally
+            {
+                try
+                {
+                    excel.Calculation = previousCalculation;
+                }
+                catch
+                {
+                    // Leaving Excel in Automatic is recoverable; hiding the
+                    // measurement behind a restore failure is not.
+                }
+            }
         }
 
         private static void TryDeleteSnapshot(WorkbookSnapshot? snapshot)
