@@ -206,6 +206,11 @@ pub struct DataTableBenchmarkSummary {
     pub data_table_parallelism: usize,
     pub status: DataTableEvaluationStatus,
     pub diagnostics: Vec<DataTableDiagnostic>,
+    /// Kernel-computed values for each data table output cell, carried here
+    /// so the host can drive those cells live instead of Excel re-running the
+    /// native table. Empty unless data table evaluation was requested.
+    #[serde(default)]
+    pub cell_values: Vec<DataTableCellValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -244,6 +249,15 @@ pub struct ExcelWritebackPlan {
     pub value_cells_to_update: usize,
     pub mode: WritebackMode,
     pub cells: Vec<FormulaWritebackCell>,
+    /// Values the data-table kernel computed for native Excel data table
+    /// output cells. These are deliberately separate from `cells`: after
+    /// import sanitizing strips the `{=TABLE()}` array marker, the body cells
+    /// carry no formula at all, so they never appear in the dependency graph
+    /// and can't be produced by the formula-writeback path. They are also the
+    /// highest-value cells to drive from WarpSpeed, since Excel re-evaluates
+    /// the source formula's whole cone once per scenario.
+    #[serde(default)]
+    pub data_table_cells: Vec<DataTableCellValue>,
     pub attempted: usize,
     pub written: usize,
     pub skipped: usize,
@@ -282,6 +296,25 @@ pub struct FormulaWritebackCell {
     pub column: i32,
     pub address: String,
     pub formula_hash: String,
+    pub value_kind: FormulaValueKind,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DataTableCellValue {
+    pub sheet_name: String,
+    pub row: i32,
+    pub column: i32,
+    pub address: String,
+    /// Identifies the owning table (`Sheet!Range`), so a host can convert or
+    /// restore one table at a time.
+    pub table_id: String,
+    /// True when this table's kernel output matched Excel's cached values
+    /// exactly. False means the two disagreed -- which on real models is
+    /// usually Excel's cache being stale rather than the kernel being wrong,
+    /// but the distinction matters before writing values into a live model,
+    /// so it travels with the value rather than only in aggregate counts.
+    pub matched_excel_cache: bool,
     pub value_kind: FormulaValueKind,
     pub value: serde_json::Value,
 }

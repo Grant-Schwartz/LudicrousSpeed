@@ -139,10 +139,28 @@ namespace WarpSpeed.ExcelAddIn.Services
             }
 
             var plan = response.Result.Writeback;
-            var published = new List<KeyValuePair<string, object>>(plan.Cells.Count);
+            var published = new List<KeyValuePair<string, object>>(
+                plan.Cells.Count + plan.DataTableCells.Count);
+
             foreach (var candidate in plan.Cells)
             {
                 if (!TryConvertValue(candidate, out var value, out _) || value == null)
+                {
+                    continue;
+                }
+
+                published.Add(new KeyValuePair<string, object>(
+                    candidate.SheetName + "!" + candidate.Address,
+                    value));
+            }
+
+            // Data table output cells: the highest-value cells to drive from
+            // WarpSpeed, since each one otherwise costs Excel a full
+            // re-evaluation of the table's source formula cone.
+            foreach (var candidate in plan.DataTableCells)
+            {
+                if (!TryConvertValue(candidate.ValueKind, candidate.Value, out var value, out _)
+                    || value == null)
                 {
                     continue;
                 }
@@ -320,10 +338,18 @@ namespace WarpSpeed.ExcelAddIn.Services
             out object? value,
             out string error)
         {
+            return TryConvertValue(candidate.ValueKind, candidate.Value, out value, out error);
+        }
+
+        private static bool TryConvertValue(
+            string valueKind,
+            JToken? token,
+            out object? value,
+            out string error)
+        {
             value = null;
             error = "";
-            var kind = candidate.ValueKind.Trim().ToLowerInvariant();
-            JToken? token = candidate.Value;
+            var kind = valueKind.Trim().ToLowerInvariant();
 
             try
             {
@@ -342,7 +368,7 @@ namespace WarpSpeed.ExcelAddIn.Services
                         error = "Blank formula-cache values are skipped because clearing a live formula cell is not safe through COM.";
                         return false;
                     default:
-                        error = "Unsupported formula value kind: " + candidate.ValueKind;
+                        error = "Unsupported formula value kind: " + valueKind;
                         return false;
                 }
             }

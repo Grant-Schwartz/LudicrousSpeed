@@ -657,7 +657,8 @@ fn build_writeback_plan(
         &mut skipped_reasons,
     );
     let skipped = skipped_reasons.iter().map(|reason| reason.count).sum();
-    let mode = if cells.is_empty() {
+    let data_table_cells = data_table_summary.cell_values.clone();
+    let mode = if cells.is_empty() && data_table_cells.is_empty() {
         notes.push(
             "No supported scalar formula values were available for live writeback.".to_string(),
         );
@@ -670,7 +671,24 @@ fn build_writeback_plan(
         WritebackMode::LiveFormulaCache
     };
 
-    writeback_plan(mode, cells, skipped, skipped_reasons, notes)
+    if !data_table_cells.is_empty() {
+        let matched = data_table_cells
+            .iter()
+            .filter(|cell| cell.matched_excel_cache)
+            .count();
+        notes.push(format!(
+            "Rust computed {} data table output cells ({} matched Excel's cached values, {} did \
+             not -- on real models a mismatch is usually a stale Excel cache rather than a kernel \
+             error, but verify before driving those cells live).",
+            data_table_cells.len(),
+            matched,
+            data_table_cells.len() - matched
+        ));
+    }
+
+    let mut plan = writeback_plan(mode, cells, skipped, skipped_reasons, notes);
+    plan.data_table_cells = data_table_cells;
+    plan
 }
 
 fn writeback_plan(
@@ -685,6 +703,7 @@ fn writeback_plan(
         value_cells_to_update: cells.len(),
         mode,
         cells,
+        data_table_cells: Vec::new(),
         attempted: 0,
         written: 0,
         skipped,
@@ -998,17 +1017,17 @@ fn build_model_from_inline(
 
     for (sheet_index, sheet) in inline.sheets.iter().enumerate() {
         for cell in &sheet.cells {
-            if let Err(message) =
-                model.set_user_input(sheet_index as u32, cell.row, cell.column, cell.input.clone())
-            {
+            if let Err(message) = model.set_user_input(
+                sheet_index as u32,
+                cell.row,
+                cell.column,
+                cell.input.clone(),
+            ) {
                 record_inline_fallback(
                     &mut fallbacks,
                     "unsupported_formula",
                     format!("Cell could not be set on the in-memory model: {message}"),
-                    Some(format!(
-                        "{}!R{}C{}",
-                        sheet.name, cell.row, cell.column
-                    )),
+                    Some(format!("{}!R{}C{}", sheet.name, cell.row, cell.column)),
                     Some(cell.input.clone()),
                 );
             }

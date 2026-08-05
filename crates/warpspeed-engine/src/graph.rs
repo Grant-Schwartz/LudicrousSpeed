@@ -1251,8 +1251,7 @@ mod tests {
         assert!(graph
             .fallback_reasons()
             .iter()
-            .any(|reason| reason.code == "dynamic_reference"
-                && reason.message.contains("Offset")));
+            .any(|reason| reason.code == "dynamic_reference" && reason.message.contains("Offset")));
     }
 
     #[test]
@@ -1296,14 +1295,19 @@ mod tests {
         model.set_user_input(0, 2, 2, "=B1+1".to_string()).unwrap();
         // C1: sums a range containing B1 -- taint must propagate through
         // range dependencies too, not just direct cell references.
-        model.set_user_input(0, 1, 3, "=SUM(B1:B2)".to_string()).unwrap();
+        model
+            .set_user_input(0, 1, 3, "=SUM(B1:B2)".to_string())
+            .unwrap();
 
         let graph = build_dependency_graph(&model);
         let safe = graph
             .writeback_safe_formula_cells()
             .collect::<std::collections::HashSet<_>>();
 
-        assert!(safe.contains(&CellId::new(0, 2, 1)), "A2 should be writeback-safe");
+        assert!(
+            safe.contains(&CellId::new(0, 2, 1)),
+            "A2 should be writeback-safe"
+        );
         assert!(
             !safe.contains(&CellId::new(0, 1, 2)),
             "B1 is itself a fallback and must not be writeback-safe"

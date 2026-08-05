@@ -15,7 +15,8 @@ use ironcalc::base::{
 
 use crate::graph::CellId;
 use crate::model::{
-    DataTableBenchmarkSummary, DataTableDiagnostic, DataTableEvaluationStatus, FormulaValueKind,
+    DataTableBenchmarkSummary, DataTableCellValue, DataTableDiagnostic, DataTableEvaluationStatus,
+    FormulaValueKind,
 };
 
 const NUMERIC_TOLERANCE: f64 = 1e-7;
@@ -122,6 +123,7 @@ struct ScenarioCounts {
     stale_cache: usize,
     unsupported: usize,
     diagnostics: Vec<DataTableDiagnostic>,
+    values: Vec<DataTableCellValue>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -386,6 +388,7 @@ pub(crate) fn evaluate_data_tables(
     summary.stale_cache_data_table_cells = counts.stale_cache;
     summary.unsupported_data_table_cells += counts.unsupported;
     summary.diagnostics.extend(counts.diagnostics);
+    summary.cell_values = counts.values;
     summary.status = data_table_status(&summary);
     summary
 }
@@ -741,7 +744,8 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
         .zip(expected_values.iter())
         .zip(scenarios.iter())
     {
-        if values_match(actual, expected) {
+        let matched = values_match(actual, expected);
+        if matched {
             counts.validated += 1;
         } else {
             counts.mismatched += 1;
@@ -754,6 +758,19 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
                     format_comparable_value(actual)
                 ));
             }
+        }
+
+        if let Some((value_kind, value)) = comparable_to_writeback_value(actual) {
+            counts.values.push(DataTableCellValue {
+                sheet_name: scenario.output_cell.sheet_name.clone(),
+                row: scenario.output_cell.row,
+                column: scenario.output_cell.column,
+                address: scenario.output_cell.address.clone(),
+                table_id: table.id.clone(),
+                matched_excel_cache: matched,
+                value_kind,
+                value,
+            });
         }
     }
     if counts.mismatched > 0 {
@@ -795,16 +812,49 @@ fn evaluate_table_kernel(model: &Model<'_>, table: &DataTableRegion) -> Scenario
     counts
 }
 
+/// Converts a kernel result to the wire shape used for live values. Returns
+/// None for values that can't be meaningfully pushed into a cell -- blanks
+/// (nothing to display) and Excel error text (never write an error over a
+/// number a user might act on).
+fn comparable_to_writeback_value(
+    value: &ComparableValue,
+) -> Option<(FormulaValueKind, serde_json::Value)> {
+    match value {
+        ComparableValue::Number(number) if number.is_finite() => {
+            Some((FormulaValueKind::Number, serde_json::json!(number)))
+        }
+        ComparableValue::Boolean(flag) => {
+            Some((FormulaValueKind::Boolean, serde_json::json!(flag)))
+        }
+        ComparableValue::String(text) if !is_excel_error_text(text) => {
+            Some((FormulaValueKind::String, serde_json::json!(text)))
+        }
+        _ => None,
+    }
+}
+
+fn is_excel_error_text(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_uppercase().as_str(),
+        "#NULL!"
+            | "#DIV/0!"
+            | "#VALUE!"
+            | "#REF!"
+            | "#NAME?"
+            | "#NUM!"
+            | "#N/A"
+            | "#GETTING_DATA"
+            | "#ERROR!"
+    )
+}
+
 /// True when every scenario in `expected_values` (Excel's cached data-table
 /// body) is bit-identical. Real data tables vary their output across
 /// scenarios by construction; an entirely flat body is strong evidence the
 /// cache simply hasn't been recalculated for these inputs, not that the
 /// cells are legitimately insensitive to every axis at once.
 fn expected_grid_looks_stale(expected_values: &[ComparableValue]) -> bool {
-    expected_values.len() >= 4
-        && expected_values
-            .windows(2)
-            .all(|pair| pair[0] == pair[1])
+    expected_values.len() >= 4 && expected_values.windows(2).all(|pair| pair[0] == pair[1])
 }
 
 fn unsupported_table_result(
@@ -3667,6 +3717,7 @@ impl ScenarioCounts {
         self.stale_cache += other.stale_cache;
         self.unsupported += other.unsupported;
         self.diagnostics.extend(other.diagnostics);
+        self.values.extend(other.values);
     }
 }
 

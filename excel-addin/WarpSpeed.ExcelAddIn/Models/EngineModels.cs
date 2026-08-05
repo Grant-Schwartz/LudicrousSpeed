@@ -379,6 +379,9 @@ namespace WarpSpeed.ExcelAddIn.Models
         [JsonProperty("cells")]
         public List<FormulaWritebackCell> Cells { get; set; } = new List<FormulaWritebackCell>();
 
+        [JsonProperty("data_table_cells")]
+        public List<DataTableCellValue> DataTableCells { get; set; } = new List<DataTableCellValue>();
+
         [JsonProperty("attempted")]
         public int Attempted { get; set; }
 
@@ -417,6 +420,41 @@ namespace WarpSpeed.ExcelAddIn.Models
 
         [JsonProperty("formula_hash")]
         public string FormulaHash { get; set; } = "";
+
+        [JsonProperty("value_kind")]
+        public string ValueKind { get; set; } = "";
+
+        [JsonProperty("value")]
+        public JToken? Value { get; set; }
+    }
+
+    /// <summary>
+    /// A value the data-table kernel computed for a native Excel data table
+    /// output cell. Separate from FormulaWritebackCell because these cells
+    /// carry no formula of their own -- they're members of an Excel-generated
+    /// {=TABLE()} array -- and because they are the highest-value cells to
+    /// drive from WarpSpeed: Excel re-evaluates the table's source formula
+    /// cone once per scenario cell.
+    /// </summary>
+    internal sealed class DataTableCellValue
+    {
+        [JsonProperty("sheet_name")]
+        public string SheetName { get; set; } = "";
+
+        [JsonProperty("row")]
+        public int Row { get; set; }
+
+        [JsonProperty("column")]
+        public int Column { get; set; }
+
+        [JsonProperty("address")]
+        public string Address { get; set; } = "";
+
+        [JsonProperty("table_id")]
+        public string TableId { get; set; } = "";
+
+        [JsonProperty("matched_excel_cache")]
+        public bool MatchedExcelCache { get; set; }
 
         [JsonProperty("value_kind")]
         public string ValueKind { get; set; } = "";

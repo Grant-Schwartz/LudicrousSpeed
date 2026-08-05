@@ -192,10 +192,26 @@ fn writeback_includes_unaffected_cells_when_other_regions_have_fallbacks() {
         sheets: vec![InlineSheet {
             name: "Sheet1".to_string(),
             cells: vec![
-                InlineCell { row: 1, column: 1, input: "10".to_string() }, // A1
-                InlineCell { row: 2, column: 1, input: "=A1*2".to_string() }, // A2, clean, unrelated
-                InlineCell { row: 1, column: 2, input: "=INDIRECT(\"A1\")".to_string() }, // B1, fallback
-                InlineCell { row: 1, column: 3, input: "=B1+1".to_string() }, // C1, downstream of B1
+                InlineCell {
+                    row: 1,
+                    column: 1,
+                    input: "10".to_string(),
+                }, // A1
+                InlineCell {
+                    row: 2,
+                    column: 1,
+                    input: "=A1*2".to_string(),
+                }, // A2, clean, unrelated
+                InlineCell {
+                    row: 1,
+                    column: 2,
+                    input: "=INDIRECT(\"A1\")".to_string(),
+                }, // B1, fallback
+                InlineCell {
+                    row: 1,
+                    column: 3,
+                    input: "=B1+1".to_string(),
+                }, // C1, downstream of B1
             ],
         }],
         defined_names: Vec::new(),
@@ -227,7 +243,11 @@ fn writeback_includes_unaffected_cells_when_other_regions_have_fallbacks() {
     // C1's own formula ("=B1+1") uses only supported constructs, but its
     // value is built on B1's untrustworthy result, so it must still be
     // excluded -- and reported as excluded, not silently dropped.
-    assert!(!result.writeback.cells.iter().any(|cell| cell.address == "C1"));
+    assert!(!result
+        .writeback
+        .cells
+        .iter()
+        .any(|cell| cell.address == "C1"));
     assert!(result
         .writeback
         .skipped_reasons
@@ -567,8 +587,16 @@ fn builds_and_evaluates_a_workbook_from_inline_cells_without_any_file() {
             InlineSheet {
                 name: "Assumptions".to_string(),
                 cells: vec![
-                    InlineCell { row: 1, column: 1, input: "10".to_string() },
-                    InlineCell { row: 2, column: 1, input: "5".to_string() },
+                    InlineCell {
+                        row: 1,
+                        column: 1,
+                        input: "10".to_string(),
+                    },
+                    InlineCell {
+                        row: 2,
+                        column: 1,
+                        input: "5".to_string(),
+                    },
                 ],
             },
             InlineSheet {
@@ -603,14 +631,26 @@ fn inline_build_skips_bad_cells_as_fallbacks_instead_of_failing_entirely() {
         sheets: vec![InlineSheet {
             name: "Sheet1".to_string(),
             cells: vec![
-                InlineCell { row: 1, column: 1, input: "10".to_string() },
+                InlineCell {
+                    row: 1,
+                    column: 1,
+                    input: "10".to_string(),
+                },
                 // Row 0 is invalid (Excel/IronCalc are 1-indexed) -- exactly
                 // the shape of bug a COM bulk-read on the host side could
                 // introduce (an off-by-one row/column index). This must be
                 // recorded as a fallback and skipped, not abort the whole
                 // workbook build.
-                InlineCell { row: 0, column: 1, input: "5".to_string() },
-                InlineCell { row: 3, column: 1, input: "=A1+1".to_string() },
+                InlineCell {
+                    row: 0,
+                    column: 1,
+                    input: "5".to_string(),
+                },
+                InlineCell {
+                    row: 3,
+                    column: 1,
+                    input: "=A1+1".to_string(),
+                },
             ],
         }],
         defined_names: Vec::new(),
@@ -637,22 +677,28 @@ fn inline_workbook_id_can_be_warmed_with_changed_cells_on_a_later_run() {
         sheets: vec![InlineSheet {
             name: "Sheet1".to_string(),
             cells: vec![
-                InlineCell { row: 1, column: 1, input: "10".to_string() },
-                InlineCell { row: 1, column: 2, input: "=A1*2".to_string() },
+                InlineCell {
+                    row: 1,
+                    column: 1,
+                    input: "10".to_string(),
+                },
+                InlineCell {
+                    row: 1,
+                    column: 2,
+                    input: "=A1*2".to_string(),
+                },
             ],
         }],
         defined_names: Vec::new(),
     };
 
-    let cold_snapshot = inline_snapshot(
-        "inline-warm",
-        inline,
-        CalcMode::Recalculate,
-        Vec::new(),
-    );
+    let cold_snapshot = inline_snapshot("inline-warm", inline, CalcMode::Recalculate, Vec::new());
     let engine = WarpSpeedEngine::new();
     let cold_result = engine.run(&cold_snapshot).unwrap();
-    assert_eq!(cold_result.writeback.cells[0].value, serde_json::json!(20.0));
+    assert_eq!(
+        cold_result.writeback.cells[0].value,
+        serde_json::json!(20.0)
+    );
 
     // Warm run: no workbook_path and no inline_workbook, just the changed
     // cell and the same workbook_id, exactly like a live-edit follow-up call.
@@ -678,5 +724,8 @@ fn inline_workbook_id_can_be_warmed_with_changed_cells_on_a_later_run() {
         inline_workbook: None,
     };
     let warm_result = engine.run(&warm_snapshot).unwrap();
-    assert_eq!(warm_result.writeback.cells[0].value, serde_json::json!(14.0));
+    assert_eq!(
+        warm_result.writeback.cells[0].value,
+        serde_json::json!(14.0)
+    );
 }
