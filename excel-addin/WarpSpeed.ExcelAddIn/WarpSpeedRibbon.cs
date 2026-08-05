@@ -309,6 +309,13 @@ namespace WarpSpeed.ExcelAddIn
             changeTracker.MarkRunSucceeded(snapshot);
 
             var completionMessage = "WarpSpeed completed. See the _WarpSpeed_Report sheet for coverage, fallback, timing, and writeback details.";
+            if (livePublished > 0)
+            {
+                completionMessage += Environment.NewLine + Environment.NewLine
+                    + $"Published {livePublished:N0} live values. Any =WS.LIVE(\"Sheet!Cell\") formulas "
+                    + "watching those addresses are now showing engine results.";
+            }
+
             if (string.Equals(writebackResult.Status, "blocked", StringComparison.OrdinalIgnoreCase))
             {
                 completionMessage += Environment.NewLine + Environment.NewLine + "Live formula writeback was blocked: " + writebackResult.Message;

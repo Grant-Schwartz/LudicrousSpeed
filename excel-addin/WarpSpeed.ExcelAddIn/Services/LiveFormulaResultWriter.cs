@@ -13,6 +13,15 @@ namespace WarpSpeed.ExcelAddIn.Services
     internal sealed class LiveFormulaResultWriter
     {
         private const int MaxFailedSamples = 20;
+
+        /// <summary>
+        /// Off by default: the in-place formula-cache probe is answered (no
+        /// mechanism works -- see Apply). Set WARPSPEED_PROBE_INPLACE=1 to
+        /// re-run it, e.g. to re-test on a new Excel build.
+        /// </summary>
+        private static bool InPlaceProbeEnabled =>
+            Environment.GetEnvironmentVariable("WARPSPEED_PROBE_INPLACE") == "1";
+
         private readonly WorkbookChangeTracker changeTracker;
         private readonly LiveFormulaCacheProbe probe = new LiveFormulaCacheProbe();
         private Excel.XlCalculation? previousCalculationMode;
@@ -43,6 +52,30 @@ namespace WarpSpeed.ExcelAddIn.Services
             {
                 plan.Notes.Add("Host had no live formula-cache candidate cells to apply.");
                 return WritebackApplyResult.NotAttempted("no_candidates");
+            }
+
+            if (!InPlaceProbeEnabled)
+            {
+                // Every candidate mechanism for writing a value into a cell
+                // that already holds a formula has been tested against live
+                // Excel and failed: Range.Value2 replaces the formula; the
+                // XLL C API's xlSet is macro-sheet-only and silently no-ops
+                // on a worksheet cell (formula preserved, value unchanged);
+                // and Value2-then-restore-formula re-evaluates the cell the
+                // instant the formula goes back in. This is an architectural
+                // property of Excel -- a formula cell's formula and value are
+                // one unit owned by the calc engine -- not a gap in the
+                // search, which is why RTD is the mechanism every market-data
+                // vendor uses. Engine values now reach the sheet through
+                // WS.LIVE cells instead (see LiveValueService), so don't run
+                // the probe on every recalc: it spawns a scratch workbook and
+                // reports a blocked result we already know the answer to.
+                // Set WARPSPEED_PROBE_INPLACE=1 to re-run it deliberately.
+                plan.Notes.Add(
+                    "In-place writeback into formula cells is not available in Excel (Value2, xlSet, "
+                    + "and Value2-then-restore all verified failing). Engine values are delivered to "
+                    + "WS.LIVE cells over RTD instead.");
+                return WritebackApplyResult.NotAttempted("superseded_by_live_values");
             }
 
             var probeResult = probe.GetResult();
