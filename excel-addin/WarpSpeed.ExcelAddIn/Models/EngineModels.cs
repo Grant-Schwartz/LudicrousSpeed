@@ -336,6 +336,44 @@ namespace WarpSpeed.ExcelAddIn.Models
 
         [JsonProperty("diagnostics")]
         public List<DataTableDiagnostic> Diagnostics { get; set; } = new List<DataTableDiagnostic>();
+
+        [JsonProperty("regions")]
+        public List<DataTableRegionInfo> Regions { get; set; } = new List<DataTableRegionInfo>();
+    }
+
+    /// <summary>
+    /// A native Excel data table's definition, enough to replace it with live
+    /// cells and put it back. ColumnInputCell/RowInputCell are the two
+    /// arguments Excel's Data Table dialog takes.
+    /// </summary>
+    internal sealed class DataTableRegionInfo
+    {
+        [JsonProperty("table_id")]
+        public string TableId { get; set; } = "";
+
+        [JsonProperty("sheet_name")]
+        public string SheetName { get; set; } = "";
+
+        [JsonProperty("range_address")]
+        public string RangeAddress { get; set; } = "";
+
+        [JsonProperty("formula_cell")]
+        public string? FormulaCell { get; set; }
+
+        [JsonProperty("column_input_cell")]
+        public string? ColumnInputCell { get; set; }
+
+        [JsonProperty("row_input_cell")]
+        public string? RowInputCell { get; set; }
+
+        [JsonProperty("is_two_dimensional")]
+        public bool IsTwoDimensional { get; set; }
+
+        [JsonProperty("kernel_eligible")]
+        public bool KernelEligible { get; set; }
+
+        [JsonProperty("cell_count")]
+        public int CellCount { get; set; }
     }
 
     internal sealed class DataTableDiagnostic

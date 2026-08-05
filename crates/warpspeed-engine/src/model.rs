@@ -211,6 +211,10 @@ pub struct DataTableBenchmarkSummary {
     /// native table. Empty unless data table evaluation was requested.
     #[serde(default)]
     pub cell_values: Vec<DataTableCellValue>,
+    /// Definitions of every native data table found, so a host can convert
+    /// them to live cells and restore them later.
+    #[serde(default)]
+    pub regions: Vec<DataTableRegionInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -223,6 +227,26 @@ pub struct DataTableDiagnostic {
     pub formula_cell: Option<String>,
     pub formula: Option<String>,
     pub affected_cells: usize,
+}
+
+/// Enough of a native Excel data table's definition for a host to replace it
+/// with live cells and put it back afterwards. `row_input_cell` and
+/// `column_input_cell` are the two arguments Excel's own Data Table dialog
+/// takes, so a restore is a single `Range.Table(rowInput, columnInput)` call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataTableRegionInfo {
+    pub table_id: String,
+    pub sheet_name: String,
+    pub range_address: String,
+    pub formula_cell: Option<String>,
+    pub column_input_cell: Option<String>,
+    pub row_input_cell: Option<String>,
+    pub is_two_dimensional: bool,
+    /// True when the kernel can actually evaluate this table's shape. Tables
+    /// that aren't eligible must keep their native Excel data table, since
+    /// WarpSpeed has no values to drive them with.
+    pub kernel_eligible: bool,
+    pub cell_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -10,6 +10,7 @@ pub use engine::{CalcEngine, WarpSpeedEngine};
 pub use model::{
     AnalysisSummary, BenchmarkSummary, CalcMode, CalcPlan, CalcResult, CalculationStrategy,
     ChangedCell, DataTableBenchmarkSummary, DataTableCellValue, DataTableDiagnostic,
+    DataTableRegionInfo,
     DataTableEvaluationStatus, EngineError, ExcelWritebackPlan, FallbackDetail, FallbackReason,
     FormulaCoverage, FormulaValueKind, FormulaWritebackCell, InlineCell, InlineDefinedName,
     InlineSheet, InlineWorkbook, WorkbookSnapshot, WritebackCellFailure, WritebackIssueSummary,

@@ -21,6 +21,7 @@ namespace WarpSpeed.ExcelAddIn
         private readonly WorkbookSnapshotService snapshotService;
         private readonly LiveFormulaResultWriter resultWriter;
         private readonly ReportSheetWriter reportWriter = new ReportSheetWriter();
+        private readonly DataTableConverter dataTableConverter = new DataTableConverter();
 
         /// <summary>
         /// Opt-in only: set WARPSPEED_ASYNC_RUN=1 to run the native engine
@@ -79,6 +80,20 @@ namespace WarpSpeed.ExcelAddIn
                   screentip='Restore Last Results'
                   supertip='Restore value changes made by the last writeback-capable WarpSpeed run.' />
         </group>
+        <group id='WarpSpeedDataTableGroup' label='Data Tables'>
+          <button id='ConvertDataTablesButton'
+                  label='Convert to Live'
+                  size='large'
+                  onAction='ConvertDataTablesToLive'
+                  screentip='Convert Data Tables to WarpSpeed Live Cells'
+                  supertip='Replace native Excel data tables with WS.LIVE cells driven by the WarpSpeed kernel. Excel stops re-running the table once per scenario; the source formula and axis inputs are left untouched.' />
+          <button id='RestoreDataTablesButton'
+                  label='Restore Native'
+                  size='large'
+                  onAction='RestoreNativeDataTables'
+                  screentip='Restore Native Excel Data Tables'
+                  supertip='Put the original Excel data tables back, using the definitions recorded when they were converted.' />
+        </group>
       </tab>
     </tabs>
   </ribbon>
@@ -98,6 +113,88 @@ namespace WarpSpeed.ExcelAddIn
         public void BenchmarkWorkbook(IRibbonControl control)
         {
             Run("benchmark", includeExcelBaseline: true);
+        }
+
+        /// <summary>
+        /// Runs the engine to discover this workbook's native data tables,
+        /// then replaces each eligible one with WS.LIVE cells. The engine run
+        /// is required rather than optional: it both locates the tables (they
+        /// are only visible in the OOXML, not through the object model in a
+        /// form we can enumerate) and computes the values the live cells will
+        /// display.
+        /// </summary>
+        public void ConvertDataTablesToLive(IRibbonControl control)
+        {
+            WorkbookSnapshot? snapshot = null;
+            try
+            {
+                snapshot = snapshotService.Create("recalculate", null);
+                var response = engineClient.Run(snapshot, out _);
+                if (!response.Ok || response.Result == null)
+                {
+                    ShowError(response.Error ?? "The engine could not analyze this workbook.");
+                    return;
+                }
+
+                // Publish first: the WS.LIVE formulas written below resolve
+                // immediately instead of showing #N/A until the next recalc.
+                var published = resultWriter.PublishLiveValues(response);
+
+                var regions = response.Result.Benchmark.DataTables.Regions;
+                var confirm = MessageBox.Show(
+                    $"Convert {regions.Count} native data table(s) to WarpSpeed live cells?"
+                        + Environment.NewLine + Environment.NewLine
+                        + "The Excel data tables will be replaced with WS.LIVE formulas. Your source "
+                        + "formulas and axis inputs are not modified, and 'Restore Native' puts the "
+                        + "original tables back."
+                        + Environment.NewLine + Environment.NewLine
+                        + $"{published:N0} engine values are available to drive them.",
+                    "WarpSpeed",
+                    MessageBoxButtons.OKCancel,
+                    MessageBoxIcon.Question);
+                if (confirm != DialogResult.OK)
+                {
+                    return;
+                }
+
+                var result = dataTableConverter.ConvertToLive(regions);
+                var message = result.Message;
+                if (result.SkippedReasons.Count > 0)
+                {
+                    message += Environment.NewLine + Environment.NewLine
+                        + string.Join(Environment.NewLine, result.SkippedReasons.ToArray());
+                }
+
+                MessageBox.Show(message, "WarpSpeed", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex.Message);
+            }
+            finally
+            {
+                TryDeleteSnapshot(snapshot);
+            }
+        }
+
+        public void RestoreNativeDataTables(IRibbonControl control)
+        {
+            try
+            {
+                var result = dataTableConverter.RestoreNativeTables();
+                var message = result.Message;
+                if (result.Errors.Count > 0)
+                {
+                    message += Environment.NewLine + Environment.NewLine
+                        + string.Join(Environment.NewLine, result.Errors.ToArray());
+                }
+
+                MessageBox.Show(message, "WarpSpeed", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex.Message);
+            }
         }
 
         public void RestoreLastResults(IRibbonControl control)

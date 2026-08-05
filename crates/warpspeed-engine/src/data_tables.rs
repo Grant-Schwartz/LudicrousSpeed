@@ -16,6 +16,7 @@ use ironcalc::base::{
 use crate::graph::CellId;
 use crate::model::{
     DataTableBenchmarkSummary, DataTableCellValue, DataTableDiagnostic, DataTableEvaluationStatus,
+    DataTableRegionInfo,
     FormulaValueKind,
 };
 
@@ -271,6 +272,30 @@ pub(crate) fn summarize_data_tables(
         Vec::new()
     };
 
+    let regions = data_tables
+        .iter()
+        .map(|table| DataTableRegionInfo {
+            table_id: table.id.clone(),
+            sheet_name: table.sheet_name.clone(),
+            range_address: table.range_address.clone(),
+            formula_cell: table
+                .formula_cell
+                .as_ref()
+                .map(|cell| format!("{}!{}", cell.sheet_name, cell.address)),
+            column_input_cell: table
+                .column_input_cell
+                .as_ref()
+                .map(|cell| format!("{}!{}", cell.sheet_name, cell.address)),
+            row_input_cell: table
+                .row_input_cell
+                .as_ref()
+                .map(|cell| format!("{}!{}", cell.sheet_name, cell.address)),
+            is_two_dimensional: table.is_two_dimensional,
+            kernel_eligible: table.is_parallel_validation_eligible(),
+            cell_count: table.cell_count(),
+        })
+        .collect();
+
     DataTableBenchmarkSummary {
         data_table_count,
         data_table_cells,
@@ -278,6 +303,7 @@ pub(crate) fn summarize_data_tables(
         reused_data_table_cells,
         unsupported_data_table_cells,
         diagnostics,
+        regions,
         status: if requested_evaluation {
             DataTableEvaluationStatus::Unsupported
         } else {
