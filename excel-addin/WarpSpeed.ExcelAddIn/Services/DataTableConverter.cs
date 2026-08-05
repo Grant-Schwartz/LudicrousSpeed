@@ -32,8 +32,15 @@ namespace WarpSpeed.ExcelAddIn.Services
     /// </summary>
     internal sealed class DataTableConverter
     {
-        private const string MetadataSheetName = "_WarpSpeed_DataTables";
+        private const string MetadataSheetName = WorkbookChangeTracker.DataTableSheetName;
         private const string LiveFunction = "WS.LIVE";
+
+        private readonly WorkbookChangeTracker changeTracker;
+
+        public DataTableConverter(WorkbookChangeTracker changeTracker)
+        {
+            this.changeTracker = changeTracker;
+        }
 
         public ConversionResult ConvertToLive(IReadOnlyList<DataTableRegionInfo> regions)
         {
@@ -56,6 +63,13 @@ namespace WarpSpeed.ExcelAddIn.Services
                 // of recalculations, which is exactly the cost being removed.
                 excel.Calculation = Excel.XlCalculation.xlCalculationManual;
                 excel.ScreenUpdating = false;
+
+                // Conversion writes over a thousand formulas plus the metadata
+                // sheet. None of that is a model edit, and letting it reach the
+                // change tracker both floods the dirty-cell budget (forcing a
+                // needless full reload next run) and records edits on a sheet
+                // no cached engine model knows about.
+                using var trackingSuspension = changeTracker.SuspendTracking();
 
                 var metadata = EnsureMetadataSheet(workbook);
 
@@ -151,6 +165,7 @@ namespace WarpSpeed.ExcelAddIn.Services
             {
                 excel.Calculation = Excel.XlCalculation.xlCalculationManual;
                 excel.ScreenUpdating = false;
+                using var trackingSuspension = changeTracker.SuspendTracking();
 
                 var row = 2; // row 1 is the header
                 while (true)

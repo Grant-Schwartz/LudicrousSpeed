@@ -13,6 +13,7 @@ namespace WarpSpeed.ExcelAddIn.Services
         public const int DirtyCellLimit = 10000;
         private const string ReportSheetName = "_WarpSpeed_Report";
         private const string FallbackSheetName = "_WarpSpeed_Fallbacks";
+        internal const string DataTableSheetName = "_WarpSpeed_DataTables";
 
         private readonly object gate = new object();
         private readonly Dictionary<string, WorkbookDirtyState> states =
@@ -272,10 +273,18 @@ namespace WarpSpeed.ExcelAddIn.Services
             return state;
         }
 
+        /// <summary>
+        /// Sheets WarpSpeed writes to itself. Edits here must never be
+        /// reported as workbook changes: they aren't model edits, and a cached
+        /// engine model won't contain a sheet WarpSpeed created after the last
+        /// snapshot -- which previously failed the whole run with "sheet not
+        /// found for changed cell".
+        /// </summary>
         private static bool IsWarpSpeedReportSheet(string sheetName)
         {
             return string.Equals(sheetName, ReportSheetName, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(sheetName, FallbackSheetName, StringComparison.OrdinalIgnoreCase);
+                || string.Equals(sheetName, FallbackSheetName, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sheetName, DataTableSheetName, StringComparison.OrdinalIgnoreCase);
         }
     }
 

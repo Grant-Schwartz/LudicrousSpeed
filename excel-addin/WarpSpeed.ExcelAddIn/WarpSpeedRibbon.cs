@@ -21,7 +21,7 @@ namespace WarpSpeed.ExcelAddIn
         private readonly WorkbookSnapshotService snapshotService;
         private readonly LiveFormulaResultWriter resultWriter;
         private readonly ReportSheetWriter reportWriter = new ReportSheetWriter();
-        private readonly DataTableConverter dataTableConverter = new DataTableConverter();
+        private readonly DataTableConverter dataTableConverter;
 
         /// <summary>
         /// Opt-in only: set WARPSPEED_ASYNC_RUN=1 to run the native engine
@@ -36,6 +36,7 @@ namespace WarpSpeed.ExcelAddIn
         {
             snapshotService = new WorkbookSnapshotService(changeTracker);
             resultWriter = new LiveFormulaResultWriter(changeTracker);
+            dataTableConverter = new DataTableConverter(changeTracker);
         }
 
         public void AutoOpen()

@@ -544,12 +544,18 @@ fn apply_changed_cells(
     };
 
     for change in changed_cells {
-        let sheet = sheet_index_by_name(model, &change.sheet_name).ok_or_else(|| {
-            EngineError::WorkbookLoad(format!(
-                "sheet not found for changed cell: {}",
-                change.sheet_name
-            ))
-        })?;
+        // A changed cell on a sheet the cached model has never seen cannot
+        // affect anything the model computes -- nothing in the model can
+        // reference it -- so skip it rather than failing the whole run. This
+        // happens legitimately whenever a sheet is added after the last
+        // snapshot (WarpSpeed's own bookkeeping sheets being the obvious
+        // case). When a workbook path is available the caller force-reloads
+        // instead, which picks the sheet up properly; when it isn't, a hard
+        // error would leave the user with nothing over a cell that provably
+        // does not matter.
+        let Some(sheet) = sheet_index_by_name(model, &change.sheet_name) else {
+            continue;
+        };
         let before_formula = cell_has_formula(model, sheet, change.row, change.column);
         let after_formula = change.is_formula || change.input.trim_start().starts_with('=');
         if change.input.is_empty() {

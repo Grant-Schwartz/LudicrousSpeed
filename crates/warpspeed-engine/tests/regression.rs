@@ -778,3 +778,38 @@ fn data_table_values_persist_across_warm_runs() {
         "warm edited run must report all data table cells, not only recomputed tables"
     );
 }
+
+#[test]
+fn changed_cell_on_unknown_sheet_does_not_fail_the_run() {
+    let fixture = create_basic_ma_fixture();
+    let engine = WarpSpeedEngine::new();
+
+    let mut cold = snapshot_for(&fixture, CalcMode::Recalculate, None);
+    let cold_result = engine.run(&cold).unwrap();
+    let expected_cells = cold_result.writeback.cells.len();
+
+    // A warm run (no workbook path, so no reload is possible) carrying an
+    // edit on a sheet the cached model has never seen. This happens whenever
+    // a sheet is created after the last snapshot -- WarpSpeed's own
+    // bookkeeping sheets being the obvious case. Such a cell cannot affect
+    // anything the model computes, so it must be skipped rather than taking
+    // the entire run down with "sheet not found for changed cell".
+    cold.workbook_path = String::new();
+    cold.changed_cells = vec![ChangedCell {
+        sheet_name: "_WarpSpeed_DataTables".to_string(),
+        row: 2,
+        column: 1,
+        address: "A2".to_string(),
+        input: "Sheet1!C3:D4".to_string(),
+        is_formula: false,
+    }];
+
+    let warm_result = engine
+        .run(&cold)
+        .expect("an edit on an unknown sheet must not fail the run");
+    assert_eq!(
+        warm_result.writeback.cells.len(),
+        expected_cells,
+        "the rest of the workbook should still be evaluated normally"
+    );
+}
