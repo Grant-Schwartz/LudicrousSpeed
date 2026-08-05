@@ -32,6 +32,25 @@ namespace WarpSpeed.ExcelAddIn
         private static bool AsyncRunEnabled =>
             Environment.GetEnvironmentVariable("WARPSPEED_ASYNC_RUN") == "1";
 
+        /// <summary>
+        /// Audit/dev view. Off by default because the detailed sections scale
+        /// with how many problems a run found -- per-fallback samples, data
+        /// table diagnostics, writeback failures and the separate detail
+        /// sheet -- and on a large model that costs more than the calculation
+        /// being reported on.
+        /// </summary>
+        private bool detailedReport;
+
+        public void ToggleDetailedReport(IRibbonControl control, bool pressed)
+        {
+            detailedReport = pressed;
+        }
+
+        public bool GetDetailedReportPressed(IRibbonControl control)
+        {
+            return detailedReport;
+        }
+
         public WarpSpeedRibbon()
         {
             snapshotService = new WorkbookSnapshotService(changeTracker);
@@ -60,23 +79,34 @@ namespace WarpSpeed.ExcelAddIn
           <button id='AnalyzeWorkbookButton'
                   label='Analyze Workbook'
                   size='large'
+                  imageMso='ErrorChecking'
                   onAction='AnalyzeWorkbook'
                   screentip='Analyze Workbook'
                   supertip='Scan the active workbook and report IronCalc coverage and fallback regions.' />
           <button id='RecalculateWorkbookButton'
                   label='Recalculate with WarpSpeed'
                   size='large'
+                  imageMso='CalculateNow'
                   onAction='RecalculateWithWarpSpeed'
                   screentip='Recalculate with WarpSpeed'
                   supertip='Evaluate the active workbook with IronCalc first and Excel fallback for unsupported regions.' />
           <button id='BenchmarkWorkbookButton'
                   label='Benchmark'
                   size='large'
+                  imageMso='CalculateSheet'
                   onAction='BenchmarkWorkbook'
                   screentip='Benchmark Workbook'
                   supertip='Compare Excel full rebuild timing against the WarpSpeed prototype engine.' />
+          <toggleButton id='DetailedReportToggle'
+                  label='Detailed Report'
+                  imageMso='TableOfContentsUpdate'
+                  onAction='ToggleDetailedReport'
+                  getPressed='GetDetailedReportPressed'
+                  screentip='Detailed Report (audit mode)'
+                  supertip='Include per-fallback samples, data table diagnostics, writeback failures and the fallback detail sheet. Slower on large models, so off by default.' />
           <button id='RestoreButton'
                   label='Restore Last Results'
+                  imageMso='Undo'
                   onAction='RestoreLastResults'
                   screentip='Restore Last Results'
                   supertip='Restore value changes made by the last writeback-capable WarpSpeed run.' />
@@ -85,12 +115,14 @@ namespace WarpSpeed.ExcelAddIn
           <button id='ConvertDataTablesButton'
                   label='Convert to Live'
                   size='large'
+                  imageMso='WhatIfAnalysis'
                   onAction='ConvertDataTablesToLive'
                   screentip='Convert Data Tables to WarpSpeed Live Cells'
                   supertip='Replace native Excel data tables with WS.LIVE cells driven by the WarpSpeed kernel. Excel stops re-running the table once per scenario; the source formula and axis inputs are left untouched.' />
           <button id='RestoreDataTablesButton'
                   label='Restore Native'
                   size='large'
+                  imageMso='Undo'
                   onAction='RestoreNativeDataTables'
                   screentip='Restore Native Excel Data Tables'
                   supertip='Put the original Excel data tables back, using the definitions recorded when they were converted.' />
@@ -405,7 +437,7 @@ namespace WarpSpeed.ExcelAddIn
                 LiveValuesPublished = livePublished,
             };
 
-            reportWriter.Write(response, hostMetrics);
+            reportWriter.Write(response, hostMetrics, detailedReport);
 
             if (!response.Ok)
             {

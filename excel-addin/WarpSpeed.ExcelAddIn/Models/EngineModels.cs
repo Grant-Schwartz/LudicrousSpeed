@@ -145,6 +145,13 @@ namespace WarpSpeed.ExcelAddIn.Models
 
         public int LiveValuesPublished { get; set; }
 
+        /// <summary>
+        /// How long writing the report itself took. Worth surfacing: on a
+        /// large model the detailed report can cost more than the
+        /// calculation, which is not obvious unless it is measured.
+        /// </summary>
+        public long ReportWriteMs { get; set; }
+
         public double? EndToEndSpeedupVsExcel
         {
             get
