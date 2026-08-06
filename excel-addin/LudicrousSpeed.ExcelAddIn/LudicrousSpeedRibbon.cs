@@ -111,7 +111,7 @@ namespace LudicrousSpeed.ExcelAddIn
                   imageMso='Refresh'
                   onAction='ConvertDataTablesToLive'
                   screentip='Convert Data Tables to LudicrousSpeed Live Cells'
-                  supertip='Replace native Excel data tables with WS.LIVE cells driven by the LudicrousSpeed kernel. Excel stops re-running the table once per scenario; the source formula and axis inputs are left untouched.' />
+                  supertip='Replace native Excel data tables with LS.LIVE cells driven by the LudicrousSpeed kernel. Excel stops re-running the table once per scenario; the source formula and axis inputs are left untouched.' />
           <button id='RestoreDataTablesButton'
                   label='Restore Native'
                   size='large'
@@ -143,7 +143,7 @@ namespace LudicrousSpeed.ExcelAddIn
 
         /// <summary>
         /// Runs the engine to discover this workbook's native data tables,
-        /// then replaces each eligible one with WS.LIVE cells. The engine run
+        /// then replaces each eligible one with LS.LIVE cells. The engine run
         /// is required rather than optional: it both locates the tables (they
         /// are only visible in the OOXML, not through the object model in a
         /// form we can enumerate) and computes the values the live cells will
@@ -169,7 +169,7 @@ namespace LudicrousSpeed.ExcelAddIn
                     return;
                 }
 
-                // Publish first: the WS.LIVE formulas written below resolve
+                // Publish first: the LS.LIVE formulas written below resolve
                 // immediately instead of showing #N/A until the next recalc.
                 var published = livePublisher.Publish(response);
 
@@ -177,7 +177,7 @@ namespace LudicrousSpeed.ExcelAddIn
                 var confirm = MessageBox.Show(
                     $"Convert {regions.Count} native data table(s) to LudicrousSpeed live cells?"
                         + Environment.NewLine + Environment.NewLine
-                        + "The Excel data tables will be replaced with WS.LIVE formulas. Your source "
+                        + "The Excel data tables will be replaced with LS.LIVE formulas. Your source "
                         + "formulas and axis inputs are not modified, and 'Restore Native' puts the "
                         + "original tables back."
                         + Environment.NewLine + Environment.NewLine
@@ -380,7 +380,7 @@ namespace LudicrousSpeed.ExcelAddIn
             long warpSpeedEndToEndMs,
             long nativeCallMs)
         {
-            // Push engine results to any WS.LIVE cells, then let Excel
+            // Push engine results to any LS.LIVE cells, then let Excel
             // propagate from those injection points. RTD values land
             // asynchronously, so the recalculation is queued rather than
             // called inline -- QueueAsMacro runs it once Excel has processed
@@ -399,7 +399,7 @@ namespace LudicrousSpeed.ExcelAddIn
                     }
                     catch
                     {
-                        // A failed propagation pass leaves the WS.LIVE cells
+                        // A failed propagation pass leaves the LS.LIVE cells
                         // themselves correct; the user can press F9.
                     }
                 });

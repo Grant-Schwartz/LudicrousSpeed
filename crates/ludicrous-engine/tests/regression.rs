@@ -821,7 +821,7 @@ fn changed_cell_on_unknown_sheet_does_not_fail_the_run() {
 
 /// Rewrites a data table's body the way the Excel host's "Convert to Live"
 /// does: the {=TABLE()} array marker is gone and every body cell holds a
-/// WS.LIVE formula pointing at itself.
+/// LS.LIVE formula pointing at itself.
 fn convert_data_table_to_live_cells(source_path: &Path, output_path: &Path) {
     let source = File::open(source_path).unwrap();
     let mut archive = ZipArchive::new(source).unwrap();
@@ -846,12 +846,12 @@ fn convert_data_table_to_live_cells(source_path: &Path, output_path: &Path) {
             file.read_to_string(&mut xml).unwrap();
             let mut xml = xml.replace(
                 r#"<f t="dataTable" ref="C3:D4" dt2D="1" dtr="1" r1="A1" r2="A2" ca="1"/>"#,
-                r#"<f>WS.LIVE("Sheet1!C3")</f>"#,
+                r#"<f>LS.LIVE("Sheet1!C3")</f>"#,
             );
             for address in ["D3", "C4", "D4"] {
                 xml = xml.replace(
                     &format!(r#"<c r="{address}">"#),
-                    &format!(r#"<c r="{address}"><f>WS.LIVE("Sheet1!{address}")</f>"#),
+                    &format!(r#"<c r="{address}"><f>LS.LIVE("Sheet1!{address}")</f>"#),
                 );
             }
             writer.write_all(xml.as_bytes()).unwrap();
@@ -919,7 +919,7 @@ fn converted_data_table_is_still_computed_from_a_host_override() {
         "an override table has no Excel value to compare against"
     );
 
-    // The WS.LIVE formulas must not become unsupported_formula fallbacks --
+    // The LS.LIVE formulas must not become unsupported_formula fallbacks --
     // that would taint everything downstream and make coverage worse after
     // converting than before.
     assert!(
@@ -927,8 +927,8 @@ fn converted_data_table_is_still_computed_from_a_host_override() {
             .analysis
             .fallback_reasons
             .iter()
-            .any(|reason| reason.message.to_ascii_uppercase().contains("WS.LIVE")),
-        "WS.LIVE cells must not be reported as unsupported formulas: {:?}",
+            .any(|reason| reason.message.to_ascii_uppercase().contains("LS.LIVE")),
+        "LS.LIVE cells must not be reported as unsupported formulas: {:?}",
         result.analysis.fallback_reasons
     );
 }

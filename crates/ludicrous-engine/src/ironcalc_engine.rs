@@ -1047,7 +1047,7 @@ fn load_model_with_import_fallbacks(
 ) -> Result<(Model<'static>, ImportFallbacks, Vec<DataTableRegion>), EngineError> {
     // Sanitize up front rather than only in response to a load failure. A
     // native data table formula makes IronCalc's import fail outright, so the
-    // old error-triggered path caught those -- but a WS.LIVE cell imports
+    // old error-triggered path caught those -- but a LS.LIVE cell imports
     // perfectly happily as an unknown function, so waiting for an error would
     // never strip it, leaving every converted cell an unsupported_formula
     // fallback that taints everything downstream. sanitize returns None when

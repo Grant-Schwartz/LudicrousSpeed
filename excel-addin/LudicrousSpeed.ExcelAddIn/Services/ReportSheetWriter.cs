@@ -112,7 +112,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             Add("Data table eval ms", dataTables.DataTableEvalMs);
             Add("Data table workers", dataTables.DataTableParallelism);
             Add("", null);
-            Add("Live values published for WS.LIVE cells", hostMetrics.LiveValuesPublished);
+            Add("Live values published for LS.LIVE cells", hostMetrics.LiveValuesPublished);
             Add("Writeback mode", result.Writeback.Mode);
             Add("Candidate cells", result.Writeback.ValueCellsToUpdate);
             Add("Host writeback status", hostMetrics.WritebackStatus);

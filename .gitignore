@@ -8,7 +8,7 @@ excel-addin/**/obj/
 *.xll
 *.xll.config
 *.dna
-!excel-addin/WarpSpeed.ExcelAddIn/WarpSpeed.ExcelAddIn.dna
+!excel-addin/LudicrousSpeed.ExcelAddIn/LudicrousSpeed.ExcelAddIn.dna
 *.packed.*
 *.log
 .DS_Store

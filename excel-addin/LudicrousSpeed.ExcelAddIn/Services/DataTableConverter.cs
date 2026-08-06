@@ -8,7 +8,7 @@ using Excel = Microsoft.Office.Interop.Excel;
 namespace LudicrousSpeed.ExcelAddIn.Services
 {
     /// <summary>
-    /// Replaces native Excel data tables with WS.LIVE cells driven by the
+    /// Replaces native Excel data tables with LS.LIVE cells driven by the
     /// LudicrousSpeed kernel, and puts them back on request.
     ///
     /// WHY: a data table is the most expensive structure in a model. Excel
@@ -24,7 +24,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
     ///
     /// An Excel data table is one array formula over the whole body range, so
     /// individual cells can't be swapped; the array is cleared and per-cell
-    /// WS.LIVE formulas are written in its place. Restore metadata is kept on
+    /// LS.LIVE formulas are written in its place. Restore metadata is kept on
     /// a hidden worksheet rather than in memory, so a restore still works in a
     /// later session or after a crash.
     ///

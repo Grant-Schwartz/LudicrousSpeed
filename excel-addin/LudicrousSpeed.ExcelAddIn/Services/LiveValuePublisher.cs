@@ -8,7 +8,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
 {
     /// <summary>
     /// Delivers engine results to the sheet by publishing them to
-    /// <see cref="LiveValueService"/>, which pushes them into WS.LIVE cells
+    /// <see cref="LiveValueService"/>, which pushes them into LS.LIVE cells
     /// over RTD.
     ///
     /// This replaced a much larger writer that tried to set a formula cell's

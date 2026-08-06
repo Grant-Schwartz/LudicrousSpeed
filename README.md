@@ -53,8 +53,17 @@ multiplicative cost:
   original table back from definitions recorded at conversion time.
 - **Circular components** - Excel iterates the region to convergence.
 
-`WS.LIVE` remains registered as a hidden alias so workbooks converted before
-the rename keep working.
+### Migrating a workbook converted before the rename
+
+`LS.LIVE` is the only live-cell function; the earlier `WS.LIVE` name is gone.
+A workbook converted before the rename holds `=WS.LIVE(...)` formulas, which
+now resolve to `#NAME?`. Either re-run `Convert to Live`, or fix them in place
+with Find & Replace across the whole workbook, searching in Formulas:
+
+```
+Find:    WS.LIVE(
+Replace: LS.LIVE(
+```
 
 ## Build prerequisites
 

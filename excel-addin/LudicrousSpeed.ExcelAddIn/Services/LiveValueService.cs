@@ -7,7 +7,7 @@ using ExcelDna.Integration;
 namespace LudicrousSpeed.ExcelAddIn.Services
 {
     /// <summary>
-    /// Backs the WS.LIVE worksheet function with values computed by the Rust
+    /// Backs the LS.LIVE worksheet function with values computed by the Rust
     /// engine, pushed into Excel over RTD.
     ///
     /// WHY RTD: writing a computed value into a cell that already holds a
@@ -62,7 +62,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
 
         /// <summary>
         /// Builds a registry key from a worksheet reference, so
-        /// <c>=WS.LIVE(E2)</c> works the way an Excel user expects rather than
+        /// <c>=LS.LIVE(E2)</c> works the way an Excel user expects rather than
         /// requiring the sheet-qualified string form. Excel hands the UDF an
         /// ExcelReference (zero-indexed) only when the argument is declared
         /// AllowReference; xlSheetNm resolves it to "[Book.xlsx]Sheet", whose
@@ -116,9 +116,9 @@ namespace LudicrousSpeed.ExcelAddIn.Services
         }
 
         /// <summary>
-        /// Pushes a batch of engine results to any WS.LIVE cells watching
+        /// Pushes a batch of engine results to any LS.LIVE cells watching
         /// them. Addresses that nothing is watching are still retained, so a
-        /// WS.LIVE formula added later picks up the last known value on its
+        /// LS.LIVE formula added later picks up the last known value on its
         /// first Subscribe rather than sitting at #N/A until the next run.
         /// </summary>
         public static void PublishAll(IEnumerable<KeyValuePair<string, object>> values)
@@ -139,7 +139,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             // (e.g. functions IronCalc doesn't implement, like XIRR), cells
             // inside or downstream of a fallback region, and data table
             // outputs are all deliberately excluded from the writeback-safe
-            // set. Without this, a WS.LIVE formula pointed at one of those
+            // set. Without this, a LS.LIVE formula pointed at one of those
             // sits at #N/A forever, indistinguishable from "still waiting for
             // the first run" -- which is a genuinely confusing failure.
             // Anything still valueless after a publish cycle gets told so.
@@ -176,7 +176,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
 
         /// <summary>
         /// Diagnostic: a sample of keys actually present, to eyeball against
-        /// what a WS.LIVE formula is asking for.
+        /// what a LS.LIVE formula is asking for.
         /// </summary>
         public static string SampleKeys(int count)
         {
@@ -195,7 +195,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
     }
 
     /// <summary>
-    /// One live cell. Excel-DNA subscribes when a WS.LIVE formula is first
+    /// One live cell. Excel-DNA subscribes when a LS.LIVE formula is first
     /// evaluated and unsubscribes when the last such formula goes away.
     /// Only IExcelObservable is implemented here -- IExcelObserver is
     /// supplied by Excel-DNA and we only ever call OnNext on it.
@@ -212,7 +212,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             lock (gate)
             {
                 observers.Add(observer);
-                // Replay the last known value so a newly-added WS.LIVE cell
+                // Replay the last known value so a newly-added LS.LIVE cell
                 // shows a number immediately instead of #N/A until the next
                 // engine run.
                 if (hasValue)
@@ -306,7 +306,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
 
     /// <summary>
     /// The worksheet-facing surface. A cell whose formula is
-    /// <c>=WS.LIVE("LBO (Share Price)!K232")</c> displays whatever the engine
+    /// <c>=LS.LIVE("LBO (Share Price)!K232")</c> displays whatever the engine
     /// last published for that address, and updates in place when a new value
     /// arrives -- without Excel evaluating anything for it.
     /// </summary>
@@ -324,7 +324,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
         {
             // AllowReference means an unquoted argument arrives as an
             // ExcelReference rather than the referenced cell's *value*, which
-            // is what =WS.LIVE(E2) needs -- without it Excel passes E2's
+            // is what =LS.LIVE(E2) needs -- without it Excel passes E2's
             // contents and the lookup is for an address named "45378".
             string key;
             if (cell is ExcelReference reference)
@@ -352,27 +352,12 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                 () => LiveValueService.GetOrCreate(key));
         }
 
-        /// <summary>
-        /// The pre-rebrand name, still registered so workbooks converted
-        /// before the rename keep working -- their cells literally contain
-        /// =WS.LIVE(...) and would break otherwise. New conversions write
-        /// LS.LIVE.
-        /// </summary>
-        [ExcelFunction(
-            Name = "WS.LIVE",
-            Description = "Deprecated alias for LS.LIVE, kept so pre-rebrand workbooks keep working.",
-            IsHidden = true)]
-        public static object WsLiveLegacy(
-            [ExcelArgument(Name = "cell", AllowReference = true)] object cell)
-        {
-            return LsLive(cell);
-        }
 
         [ExcelFunction(
             Name = "LS.LIVECOUNT",
             Description = "Number of cell addresses LudicrousSpeed is currently tracking for live values.",
             IsVolatile = true)]
-        public static object WsLiveCount()
+        public static object LsLiveCount()
         {
             return (double)LiveValueService.WatchedCellCount;
         }
@@ -381,7 +366,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             Name = "LS.LIVEDEBUG",
             Description = "Diagnostic: registry state for one address (is it present, does it have a value, is anything subscribed).",
             IsVolatile = true)]
-        public static object WsLiveDebug(
+        public static object LsLiveDebug(
             [ExcelArgument(Name = "address", Description = "Cell to inspect, e.g. \"Sheet1!A1\"")]
             string address)
         {
@@ -392,7 +377,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             Name = "LS.LIVEKEYS",
             Description = "Diagnostic: sample of addresses currently in the live-value registry.",
             IsVolatile = true)]
-        public static object WsLiveKeys(
+        public static object LsLiveKeys(
             [ExcelArgument(Name = "count", Description = "How many keys to show")] object count)
         {
             var n = 5;

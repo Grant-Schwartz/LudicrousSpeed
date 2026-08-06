@@ -39,7 +39,7 @@ pub(crate) struct SanitizedSheet {
     xml: String,
     fallbacks: ImportFallbacks,
     data_tables: Vec<DataTableRegion>,
-    /// WS.LIVE cells reduced to their cached values. These are not fallbacks
+    /// LS.LIVE cells reduced to their cached values. These are not fallbacks
     /// -- the kernel recomputes them -- but they still mean the sheet XML was
     /// rewritten and must replace the original.
     stripped_live_cells: usize,
@@ -74,9 +74,9 @@ pub(crate) fn sanitize_data_table_formulas(
         file.read_to_string(&mut xml)
             .map_err(|err| EngineError::WorkbookLoad(err.to_string()))?;
 
-        // WS.LIVE cells need stripping too, and a workbook whose tables
+        // LS.LIVE cells need stripping too, and a workbook whose tables
         // have all been converted contains no dataTable markers at all.
-        if !xml.contains("dataTable") && !contains_any_ignore_ascii_case(&xml) {
+        if !xml.contains("dataTable") && !contains_ignore_ascii_case(&xml, LIVE_MARKER) {
             continue;
         }
 
@@ -100,7 +100,7 @@ pub(crate) fn sanitize_data_table_formulas(
     }
 
     // A workbook whose tables are all converted produces no fallbacks, but
-    // its WS.LIVE cells still had to be stripped, so the rewrite is required.
+    // its LS.LIVE cells still had to be stripped, so the rewrite is required.
     if fallbacks.is_empty() && replacements.is_empty() {
         return Ok(None);
     }
@@ -140,7 +140,7 @@ pub(crate) fn strip_data_table_formulas_from_sheet_xml(
         };
 
         let body_text = body_match.as_str();
-        if !body_text.contains("dataTable") && !contains_any_ignore_ascii_case(body_text) {
+        if !body_text.contains("dataTable") && !contains_ignore_ascii_case(body_text, LIVE_MARKER) {
             continue;
         }
 
@@ -220,21 +220,12 @@ pub(crate) fn strip_data_table_formulas_from_sheet_xml(
 
 /// Uppercase form of the live-cell function name, for case-insensitive
 /// scanning. Held as a constant so the scan never has to allocate.
-const LIVE_MARKERS: [&[u8]; 2] = [b"LS.LIVE", b"WS.LIVE"];
+const LIVE_MARKER: &[u8] = b"LS.LIVE";
 
 /// Case-insensitive substring search that allocates nothing. The naive
 /// version -- uppercasing the haystack -- copied every sheet's XML and every
 /// cell body, which on a large workbook cost more than the whole sanitize
 /// pass it was guarding.
-/// True when either the current or the pre-rebrand live-cell function name
-/// appears. Both are recognized so workbooks converted before the rename are
-/// still stripped correctly.
-fn contains_any_ignore_ascii_case(haystack: &str) -> bool {
-    LIVE_MARKERS
-        .iter()
-        .any(|marker| contains_ignore_ascii_case(haystack, marker))
-}
-
 fn contains_ignore_ascii_case(haystack: &str, needle_upper: &[u8]) -> bool {
     let bytes = haystack.as_bytes();
     if bytes.len() < needle_upper.len() {
@@ -246,7 +237,7 @@ fn contains_ignore_ascii_case(haystack: &str, needle_upper: &[u8]) -> bool {
         .any(|window| window.eq_ignore_ascii_case(needle_upper))
 }
 
-/// True when the `<f>` element starting at `open_end` contains a WS.LIVE
+/// True when the `<f>` element starting at `open_end` contains a LS.LIVE
 /// call. Self-closing formula tags have no text and never qualify.
 fn formula_body_is_live_cell(body: &str, open_end: usize, open_tag: &str) -> bool {
     if open_tag.trim_end().ends_with("/>") {
@@ -257,7 +248,7 @@ fn formula_body_is_live_cell(body: &str, open_end: usize, open_tag: &str) -> boo
         return false;
     };
 
-    contains_any_ignore_ascii_case(&body[open_end..open_end + relative_close])
+    contains_ignore_ascii_case(&body[open_end..open_end + relative_close], LIVE_MARKER)
 }
 
 fn strip_data_table_formulas_from_cell_body(body: &str) -> StrippedCellBody {
@@ -276,7 +267,7 @@ fn strip_data_table_formulas_from_cell_body(body: &str) -> StrippedCellBody {
 
         let is_data_table = attrs.get("t").map(String::as_str) == Some("dataTable");
 
-        // A WS.LIVE cell is one LudicrousSpeed already drives. Its formula is a
+        // A LS.LIVE cell is one LudicrousSpeed already drives. Its formula is a
         // function IronCalc has never heard of, so leaving it in place would
         // make the cell an unsupported_formula fallback and -- through
         // dependency tainting -- drag everything downstream out of the
