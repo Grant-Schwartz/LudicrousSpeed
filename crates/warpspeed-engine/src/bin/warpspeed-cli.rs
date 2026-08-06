@@ -10,7 +10,7 @@ fn main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
         eprintln!(
-            "usage: warpspeed-cli <workbook.xlsx> [analyze|recalculate|benchmark] [--json] [--eval-data-tables] [--runs N] [--edit Sheet!A1=value]"
+            "usage: warpspeed-cli <workbook.xlsx> [analyze|recalculate|benchmark] [--json] [--no-analytics] [--eval-data-tables] [--runs N] [--edit Sheet!A1=value]"
         );
         std::process::exit(2);
     };
@@ -22,12 +22,14 @@ fn main() {
     let mut runs = 1_usize;
     let mut runs_was_set = false;
     let mut edit_cells = Vec::new();
+    let mut include_analytics = true;
     let mut mode_was_set = false;
 
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
             "--json" => output_json = true,
+            "--no-analytics" => include_analytics = false,
             "--eval-data-tables" => evaluate_data_tables = true,
             "--runs" => {
                 runs_was_set = true;
@@ -110,6 +112,7 @@ fn main() {
         language: "en".to_string(),
         inline_workbook: None,
         data_table_overrides: Vec::new(),
+        include_analytics,
     };
 
     let engine = WarpSpeedEngine::new();

@@ -639,12 +639,16 @@ fn build_result(
                 snapshot.evaluate_data_tables,
             ),
             fallback_reasons,
-            fallback_details: merged_fallback_details(
-                graph,
-                import_fallbacks,
-                &data_table_summary,
-                snapshot.evaluate_data_tables,
-            ),
+            fallback_details: if snapshot.include_analytics {
+                merged_fallback_details(
+                    graph,
+                    import_fallbacks,
+                    &data_table_summary,
+                    snapshot.evaluate_data_tables,
+                )
+            } else {
+                Vec::new()
+            },
         },
         benchmark: benchmark_summary(snapshot, started, timing),
         writeback: build_writeback_plan(
@@ -699,6 +703,7 @@ fn build_writeback_plan(
         graph,
         data_tables,
         cached_formula_values,
+        snapshot.include_analytics,
         &mut skipped_reasons,
     );
     let skipped = skipped_reasons.iter().map(|reason| reason.count).sum();
@@ -774,6 +779,7 @@ fn collect_formula_writeback_cells(
     graph: &DependencyGraph,
     data_tables: &[DataTableRegion],
     cached_formula_values: &HashMap<CellId, CachedFormulaValue>,
+    include_analytics: bool,
     skipped_reasons: &mut Vec<WritebackIssueSummary>,
 ) -> Vec<FormulaWritebackCell> {
     let mut cells = Vec::new();
@@ -858,7 +864,13 @@ fn collect_formula_writeback_cells(
             row: cell.row,
             column: cell.column,
             address,
-            formula_hash: formula_hash(&formula),
+            // Only the (retired) in-place writeback path ever compared these,
+            // and hashing every candidate is not free.
+            formula_hash: if include_analytics {
+                formula_hash(&formula)
+            } else {
+                String::new()
+            },
             value_kind,
             value,
         });
@@ -1308,6 +1320,7 @@ mod tests {
             language: "en".to_string(),
             inline_workbook: None,
             data_table_overrides: Vec::new(),
+            include_analytics: true,
         };
 
         assert!(snapshot.validate().is_err());

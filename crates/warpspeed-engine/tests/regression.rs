@@ -77,6 +77,7 @@ fn rejects_missing_workbook_path() {
         language: "en".to_string(),
         inline_workbook: None,
         data_table_overrides: Vec::new(),
+        include_analytics: true,
     };
 
     let err = WarpSpeedEngine::new().run(&snapshot).unwrap_err();
@@ -349,6 +350,7 @@ fn snapshot_for(
         language: "en".to_string(),
         inline_workbook: None,
         data_table_overrides: Vec::new(),
+        include_analytics: true,
     }
 }
 
@@ -580,6 +582,7 @@ fn inline_snapshot(
         language: "en".to_string(),
         inline_workbook: Some(inline),
         data_table_overrides: Vec::new(),
+        include_analytics: true,
     }
 }
 
@@ -726,6 +729,7 @@ fn inline_workbook_id_can_be_warmed_with_changed_cells_on_a_later_run() {
         language: "en".to_string(),
         inline_workbook: None,
         data_table_overrides: Vec::new(),
+        include_analytics: true,
     };
     let warm_result = engine.run(&warm_snapshot).unwrap();
     assert_eq!(

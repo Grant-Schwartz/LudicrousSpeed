@@ -57,6 +57,16 @@ pub struct WorkbookSnapshot {
     /// when it converts and replays them on every snapshot.
     #[serde(default)]
     pub data_table_overrides: Vec<DataTableOverride>,
+    /// Whether to produce data that only exists for analysis: per-cell
+    /// formula hashes and the full fallback detail list.
+    ///
+    /// Off by default. On a large model the hashes alone are ~630 KB of the
+    /// response and 10k SHA256 computations, all of it for the in-place
+    /// writeback path -- which is retired, since Excel has no way to set a
+    /// formula cell's cached value. Producing it on every run costs real time
+    /// for output nothing reads unless the host is showing its report.
+    #[serde(default)]
+    pub include_analytics: bool,
 }
 
 /// A data table declared by the host rather than discovered in the file.

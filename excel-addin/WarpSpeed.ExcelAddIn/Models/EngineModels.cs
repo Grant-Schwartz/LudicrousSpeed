@@ -45,6 +45,15 @@ namespace WarpSpeed.ExcelAddIn.Models
         [JsonProperty("data_table_overrides")]
         public List<DataTableOverride> DataTableOverrides { get; set; } = new List<DataTableOverride>();
 
+        /// <summary>
+        /// Ask the engine for analysis-only output: per-cell formula hashes
+        /// and the full fallback detail list. Roughly 20% of the response on a
+        /// large model, and thousands of SHA256 computations, none of it read
+        /// unless the report is being written.
+        /// </summary>
+        [JsonProperty("include_analytics")]
+        public bool IncludeAnalytics { get; set; }
+
         [JsonIgnore]
         public long SnapshotSaveMs { get; set; }
 

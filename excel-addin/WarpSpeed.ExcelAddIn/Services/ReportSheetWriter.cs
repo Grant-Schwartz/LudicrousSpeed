@@ -29,6 +29,17 @@ namespace WarpSpeed.ExcelAddIn.Services
         /// </summary>
         public void Write(EngineResponse response, HostRunMetrics hostMetrics, bool detailed)
         {
+            if (!detailed)
+            {
+                // Reporting is opt-in. With the toggle off nothing is written
+                // at all -- not even a summary block -- so a run costs only
+                // the calculation and the live-value publish. Creating the
+                // sheet, clearing it and writing to it are all COM round
+                // trips that exist purely for analysis.
+                hostMetrics.ReportWriteMs = 0;
+                return;
+            }
+
             var started = System.Diagnostics.Stopwatch.StartNew();
             dynamic excel = ExcelDnaUtil.Application;
             dynamic workbook = excel.ActiveWorkbook;

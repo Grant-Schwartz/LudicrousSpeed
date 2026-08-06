@@ -99,7 +99,7 @@ namespace WarpSpeed.ExcelAddIn
                   supertip='Compare Excel full rebuild timing against the WarpSpeed prototype engine.' />
           <toggleButton id='DetailedReportToggle'
                   label='Detailed Report'
-                  imageMso='TableOfContentsUpdate'
+                  imageMso='ErrorChecking'
                   onAction='ToggleDetailedReport'
                   getPressed='GetDetailedReportPressed'
                   screentip='Detailed Report (audit mode)'
@@ -115,7 +115,7 @@ namespace WarpSpeed.ExcelAddIn
           <button id='ConvertDataTablesButton'
                   label='Convert to Live'
                   size='large'
-                  imageMso='WhatIfAnalysis'
+                  imageMso='Refresh'
                   onAction='ConvertDataTablesToLive'
                   screentip='Convert Data Tables to WarpSpeed Live Cells'
                   supertip='Replace native Excel data tables with WS.LIVE cells driven by the WarpSpeed kernel. Excel stops re-running the table once per scenario; the source formula and axis inputs are left untouched.' />
@@ -275,6 +275,7 @@ namespace WarpSpeed.ExcelAddIn
                 var warpspeedStopwatch = Stopwatch.StartNew();
                 snapshot = snapshotService.Create(mode, excelBaselineMs);
                 snapshot.DataTableOverrides = dataTableConverter.ReadOverrides();
+                snapshot.IncludeAnalytics = detailedReport;
                 var response = engineClient.Run(snapshot, out var nativeCallMs);
                 warpspeedStopwatch.Stop();
 
@@ -320,6 +321,7 @@ namespace WarpSpeed.ExcelAddIn
                 var warpspeedStopwatch = Stopwatch.StartNew();
                 snapshot = snapshotService.Create(mode, excelBaselineMs);
                 snapshot.DataTableOverrides = dataTableConverter.ReadOverrides();
+                snapshot.IncludeAnalytics = detailedReport;
                 var snapshotForBackgroundCall = snapshot;
 
                 SetStatusBar("WarpSpeed is calculating in the background...");
@@ -437,6 +439,7 @@ namespace WarpSpeed.ExcelAddIn
                 LiveValuesPublished = livePublished,
             };
 
+            // No-op unless the Detailed Report toggle is on.
             reportWriter.Write(response, hostMetrics, detailedReport);
 
             if (!response.Ok)
@@ -447,24 +450,24 @@ namespace WarpSpeed.ExcelAddIn
 
             changeTracker.MarkRunSucceeded(snapshot);
 
-            var completionMessage = "WarpSpeed completed. See the _WarpSpeed_Report sheet for coverage, fallback, timing, and writeback details.";
+            // Success is reported on the status bar rather than in a dialog.
+            // A modal popup after every recalculation is the single most
+            // intrusive thing an add-in can do, and it also stops the clock on
+            // "how fast did that feel". Failures still raise a dialog -- those
+            // are worth interrupting for.
+            var elapsed = hostMetrics.WarpSpeedEndToEndMs;
+            var summary = $"WarpSpeed: {elapsed:N0} ms";
             if (livePublished > 0)
             {
-                completionMessage += Environment.NewLine + Environment.NewLine
-                    + $"Published {livePublished:N0} live values. Any =WS.LIVE(\"Sheet!Cell\") formulas "
-                    + "watching those addresses are now showing engine results.";
+                summary += $", {livePublished:N0} live values published";
             }
 
-            if (string.Equals(writebackResult.Status, "blocked", StringComparison.OrdinalIgnoreCase))
+            if (detailedReport)
             {
-                completionMessage += Environment.NewLine + Environment.NewLine + "Live formula writeback was blocked: " + writebackResult.Message;
+                summary += " - see _WarpSpeed_Report";
             }
 
-            MessageBox.Show(
-                completionMessage,
-                "WarpSpeed",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            SetStatusBar(summary);
         }
 
         private static void ShowError(string? message)
