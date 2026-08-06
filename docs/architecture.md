@@ -1,6 +1,6 @@
 # Architecture
 
-WarpSpeed is split into an Excel host and a Rust engine.
+LudicrousSpeed is split into an Excel host and a Rust engine.
 
 ## Excel host
 
@@ -30,7 +30,7 @@ maximum performance.
 ### In-memory bridge (opt-in, unverified against live Excel)
 
 A second, in-memory bridge now exists behind `WorkbookSnapshot.inline_workbook`
-in the Rust engine and `WARPSPEED_INLINE_SNAPSHOT=1` in the Excel host, as an
+in the Rust engine and `LUDICROUS_INLINE_SNAPSHOT=1` in the Excel host, as an
 alternative to `SaveCopyAs` + re-importing the saved `.xlsx` on a cold load.
 `InMemoryWorkbookReader` (C#) bulk-reads every worksheet's `UsedRange.Formula`
 and the workbook's defined names directly over COM; `build_model_from_inline`
@@ -65,7 +65,7 @@ last result without evaluating.
 
 ## Data tables
 
-OpenXML data table formulas are parsed before IronCalc import. WarpSpeed records
+OpenXML data table formulas are parsed before IronCalc import. LudicrousSpeed records
 the table range, input cells, inferred source formula cell, and cached Excel
 outputs, then strips the unsupported `dataTable` formula marker in a temporary
 copy so the rest of the workbook can load. Data tables remain fallback regions

@@ -23,27 +23,27 @@ function Invoke-Native {
 }
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$addinProject = Join-Path $repoRoot "excel-addin\WarpSpeed.ExcelAddIn\WarpSpeed.ExcelAddIn.csproj"
-$addinOutput = Join-Path $repoRoot "excel-addin\WarpSpeed.ExcelAddIn\bin\$Configuration\net48"
+$addinProject = Join-Path $repoRoot "excel-addin\LudicrousSpeed.ExcelAddIn\LudicrousSpeed.ExcelAddIn.csproj"
+$addinOutput = Join-Path $repoRoot "excel-addin\LudicrousSpeed.ExcelAddIn\bin\$Configuration\net48"
 
 if ($Configuration -eq "Release") {
-    $cargoBuildArgs = @("build", "-p", "warpspeed-engine", "--release")
+    $cargoBuildArgs = @("build", "-p", "ludicrous-engine", "--release")
     $targetFolder = "release"
 } else {
-    $cargoBuildArgs = @("build", "-p", "warpspeed-engine")
+    $cargoBuildArgs = @("build", "-p", "ludicrous-engine")
     $targetFolder = "debug"
 }
 
-$engineDll = Join-Path $repoRoot "target\$targetFolder\warpspeed_engine.dll"
+$engineDll = Join-Path $repoRoot "target\$targetFolder\ludicrous_engine.dll"
 
-Write-Host "WarpSpeed Windows build"
+Write-Host "LudicrousSpeed Windows build"
 Write-Host "Repo: $repoRoot"
 Write-Host "Configuration: $Configuration"
 Write-Host ""
 
 if (-not $SkipTests) {
     Write-Host "Running Rust tests..."
-    Invoke-Native "cargo" "test" "-p" "warpspeed-engine"
+    Invoke-Native "cargo" "test" "-p" "ludicrous-engine"
     Write-Host ""
 }
 

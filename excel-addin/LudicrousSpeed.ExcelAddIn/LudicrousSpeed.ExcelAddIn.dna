@@ -1,0 +1,4 @@
+<DnaLibrary Name="LudicrousSpeed" RuntimeVersion="v4.0">
+  <ExternalLibrary Path="LudicrousSpeed.ExcelAddIn.dll" ExplicitExports="false" LoadFromBytes="true" Pack="true" />
+</DnaLibrary>
+

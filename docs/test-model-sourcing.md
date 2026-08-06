@@ -49,7 +49,7 @@ local-only copies in `fixtures/external`, which is ignored by git.
 3. Run:
 
    ```sh
-   cargo run -p warpspeed-engine --bin warpspeed-cli -- fixtures/external/model.xlsx analyze
+   cargo run -p ludicrous-engine --bin ludicrous-cli -- fixtures/external/model.xlsx analyze
    ```
 
 4. Record formula coverage, fallback reasons, and timings in a local notes file.

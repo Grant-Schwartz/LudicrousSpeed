@@ -16,7 +16,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\build_windows.ps1 -Configuration Release
 ```
 
-The script runs Rust tests, builds `target\release\warpspeed_engine.dll`,
+The script runs Rust tests, builds `target\release\ludicrous_engine.dll`,
 builds the Excel-DNA add-in, copies the native DLL beside the add-in output, and
 prints the `.xll` path to load in Excel.
 
@@ -31,7 +31,7 @@ For a faster compile while iterating:
 Use the edited-assumption benchmark to avoid measuring only a no-op cache hit:
 
 ```powershell
-cargo run -p warpspeed-engine --bin warpspeed-cli -- outputs\lbo-fixtures\ALMS_v11.xlsx benchmark --eval-data-tables --edit "LBO (Share Price)!G9=0.25"
+cargo run -p ludicrous-engine --bin ludicrous-cli -- outputs\lbo-fixtures\ALMS_v11.xlsx benchmark --eval-data-tables --edit "LBO (Share Price)!G9=0.25"
 ```
 
 Expected shape:
@@ -47,10 +47,10 @@ Expected shape:
 1. Add the add-in output folder as a trusted location in Excel.
 2. Load the generated `.xll` through `File > Options > Add-ins > Excel Add-ins > Browse`.
 3. Open `outputs\lbo-fixtures\ALMS_v11.xlsx`.
-4. Click `WarpSpeed > Benchmark` once to warm the engine.
+4. Click `LudicrousSpeed > Benchmark` once to warm the engine.
 5. Change `LBO (Share Price)!G9` from `20.0%` to `25.0%`.
-6. Click `WarpSpeed > Benchmark` again.
-7. Check `_WarpSpeed_Report`.
+6. Click `LudicrousSpeed > Benchmark` again.
+7. Check `_LudicrousSpeed_Report`.
 
 The second report should show a warm dirty run, not a no-change result cache hit:
 
@@ -67,8 +67,8 @@ Use a simple workbook first so fallback regions do not intentionally block the
 MVP:
 
 1. Create a workbook with `A1 = 100`, `A2 = 25`, and `B1 = SUM(A1:A2)`.
-2. Click `WarpSpeed > Recalculate with WarpSpeed`.
-3. Check `_WarpSpeed_Report`.
+2. Click `LudicrousSpeed > Recalculate with LudicrousSpeed`.
+3. Check `_LudicrousSpeed_Report`.
 
 Expected shape for the gated MVP:
 
@@ -121,7 +121,7 @@ assumed one.
 
 `InMemoryWorkbookReader` and its wiring in `WorkbookSnapshotService` were
 written without access to Windows or Excel and have not been built or run
-against live Excel. Before trusting `WARPSPEED_INLINE_SNAPSHOT=1` for
+against live Excel. Before trusting `LUDICROUS_INLINE_SNAPSHOT=1` for
 anything beyond experimentation, verify:
 
 1. `dotnet build` / MSBuild succeeds — first confirm the COM member accesses
@@ -131,7 +131,7 @@ anything beyond experimentation, verify:
    text, booleans, dates, at least one formula error (e.g. `=1/0`), a
    workbook-scoped defined name, and a sheet-scoped defined name.
 3. Run `Analyze Workbook` once with the variable set and once unset (file-based
-   path). Diff the two `_WarpSpeed_Report` sheets' coverage, fallback, and
+   path). Diff the two `_LudicrousSpeed_Report` sheets' coverage, fallback, and
    fallback-detail sections — they should match exactly except for timing.
 4. Repeat step 3 on `outputs\lbo-fixtures\ALMS_v11.xlsx` (or another large real
    model) and compare `Rust load ms` between the two runs — this is the number
@@ -144,23 +144,23 @@ anything beyond experimentation, verify:
 
 ## Async Ribbon Acceptance Test (Unverified Feature)
 
-`WarpSpeedRibbon.RunAsync` (native engine call off Excel's UI thread via
+`LudicrousSpeedRibbon.RunAsync` (native engine call off Excel's UI thread via
 `ExcelAsyncUtil.QueueAsMacro`) was also written without access to Windows or
 Excel. The `ExcelAsyncUtil.QueueAsMacro` API itself was confirmed to exist in
 the pinned `ExcelDna.Integration` 1.9.0 package by inspecting the DLL, but the
 threading behavior has not been exercised. Before trusting
-`WARPSPEED_ASYNC_RUN=1` for anything beyond experimentation, verify:
+`LUDICROUS_ASYNC_RUN=1` for anything beyond experimentation, verify:
 
 1. `dotnet build` / MSBuild succeeds.
 2. On a large workbook (e.g. `ALMS_v11.xlsx`), click `Recalculate with
-   WarpSpeed` with the variable set. Confirm Excel's UI stays responsive
+   LudicrousSpeed` with the variable set. Confirm Excel's UI stays responsive
    (you can click cells, switch sheets, see the status bar message) while the
    native call is in flight, rather than showing "Not Responding."
-3. Confirm the completion dialog, `_WarpSpeed_Report` sheet, and writeback
+3. Confirm the completion dialog, `_LudicrousSpeed_Report` sheet, and writeback
    results are identical to a run with the variable unset (same workbook,
    same inputs) — this flag should only change *when* work happens, not
    *what* happens.
-4. Force a failure (e.g. temporarily rename `warpspeed_engine.dll`) and
+4. Force a failure (e.g. temporarily rename `ludicrous_engine.dll`) and
    confirm: an error dialog still appears, the status bar clears, and —
    importantly — Excel's calculation mode is correctly restored rather than
    left stuck on Manual (check `ExcelCalculationGuard`'s effect via
@@ -171,14 +171,14 @@ threading behavior has not been exercised. Before trusting
    path — this is a pre-existing gap, not new, but async runs make it easier
    to trigger by clicking again before the first run's dialog appears).
 6. Only after 1–5 pass, consider flipping the default in
-   `WarpSpeedRibbon.AsyncRunEnabled`.
+   `LudicrousSpeedRibbon.AsyncRunEnabled`.
 
 ## Notes
 
-- `warpspeed_engine.dll` must sit beside the Excel add-in output because
+- `ludicrous_engine.dll` must sit beside the Excel add-in output because
   `NativeEngineClient` imports that exact DLL name.
 - Use 64-bit Excel with the 64-bit Rust build. If testing on 32-bit Excel, build
   an `i686-pc-windows-msvc` native DLL and use the matching 32-bit Excel-DNA
   add-in output.
 - If Windows blocks the downloaded add-in, run `Unblock-File` on the `.xll` and
-  `warpspeed_engine.dll`, or use a trusted location.
+  `ludicrous_engine.dll`, or use a trusted location.

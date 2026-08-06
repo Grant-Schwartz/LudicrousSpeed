@@ -1,0 +1,26 @@
+[package]
+name = "ludicrous-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "ludicrous_engine"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+ironcalc = "0.7.1"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+time = { version = "0.3", features = ["formatting"] }
+zip = "0.6"
+
+[[bin]]
+name = "ludicrous-cli"
+path = "src/bin/ludicrous-cli.rs"
+
+[dev-dependencies]
+tempfile = "3"

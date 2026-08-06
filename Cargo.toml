@@ -1,11 +1,11 @@
 [workspace]
-members = ["crates/warpspeed-engine"]
+members = ["crates/ludicrous-engine"]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://example.local/warpspeed"
+repository = "https://example.local/ludicrous"
 
 [patch.crates-io]
 # Fixes an upstream import-perf bug (per-formula-cell parser reconstruction

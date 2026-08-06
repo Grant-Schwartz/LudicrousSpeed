@@ -36,11 +36,11 @@ jobs:
       - name: Upload Windows add-in artifact
         uses: actions/upload-artifact@v4
         with:
-          name: warpspeed-windows-release
+          name: ludicrous-windows-release
           path: |
-            excel-addin/WarpSpeed.ExcelAddIn/bin/Release/net48/**
-            target/release/warpspeed-cli.exe
-            target/release/warpspeed_engine.dll
+            excel-addin/LudicrousSpeed.ExcelAddIn/bin/Release/net48/**
+            target/release/ludicrous-cli.exe
+            target/release/ludicrous_engine.dll
           if-no-files-found: error
 
       - name: Package Windows release zip
@@ -50,25 +50,25 @@ jobs:
           $ErrorActionPreference = "Stop"
           $shortSha = "${{ github.sha }}".Substring(0, 7)
           $dist = "dist"
-          $staging = Join-Path $dist "warpspeed-windows-$shortSha"
+          $staging = Join-Path $dist "ludicrous-windows-$shortSha"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
-          Copy-Item "excel-addin/WarpSpeed.ExcelAddIn/bin/Release/net48/*" $staging -Recurse -Force
-          Copy-Item "target/release/warpspeed-cli.exe" $staging -Force
-          Copy-Item "target/release/warpspeed_engine.dll" $staging -Force
-          Compress-Archive -Path (Join-Path $staging "*") -DestinationPath (Join-Path $dist "warpspeed-windows-$shortSha.zip") -Force
+          Copy-Item "excel-addin/LudicrousSpeed.ExcelAddIn/bin/Release/net48/*" $staging -Recurse -Force
+          Copy-Item "target/release/ludicrous-cli.exe" $staging -Force
+          Copy-Item "target/release/ludicrous_engine.dll" $staging -Force
+          Compress-Archive -Path (Join-Path $staging "*") -DestinationPath (Join-Path $dist "ludicrous-windows-$shortSha.zip") -Force
 
       - name: Create GitHub release for this commit
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: auto-${{ github.sha }}
-          RELEASE_TITLE: WarpSpeed Windows ${{ github.sha }}
+          RELEASE_TITLE: LudicrousSpeed Windows ${{ github.sha }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $shortSha = "${{ github.sha }}".Substring(0, 7)
-          gh release create $env:RELEASE_TAG "dist/warpspeed-windows-$shortSha.zip" `
-            --title "WarpSpeed Windows $shortSha" `
+          gh release create $env:RELEASE_TAG "dist/ludicrous-windows-$shortSha.zip" `
+            --title "LudicrousSpeed Windows $shortSha" `
             --notes "Automatic temporary release for commit ${{ github.sha }}." `
             --target "${{ github.sha }}" `
             --latest
