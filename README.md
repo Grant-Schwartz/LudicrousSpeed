@@ -13,22 +13,48 @@ benchmark diagnostics.
 - `fixtures` - Synthetic workbook scenarios and fixture notes.
 - `docs` - Architecture and validation notes.
 
-## Prototype flow
+## Flow
 
 1. User clicks `Analyze Workbook`, `Recalculate with LudicrousSpeed`, or
    `Benchmark` in Excel.
-2. The add-in saves a temporary `.xlsx` copy of the active workbook.
+2. The add-in saves a temporary `.xlsx` copy of the active workbook (skipped on
+   warm runs, which send only the changed cells).
 3. Rust loads the workbook with IronCalc and evaluates the model.
-4. For `Recalculate with LudicrousSpeed`, Rust returns formula-cache writeback
-   candidates only when the workbook has no fallback regions.
-5. The add-in probes whether Excel exposes a supported formula-preserving live
-   cache setter. If the probe fails, formulas and model cells are left untouched.
-6. The add-in displays coverage, timing, and writeback diagnostics.
-7. Excel remains the fallback and correctness authority for unsupported behavior.
+4. Rust returns a computed value for every cell it can vouch for.
+5. The add-in publishes those values to `LS.LIVE` cells over RTD, then lets
+   Excel propagate downstream from each one.
+6. Excel remains the fallback and correctness authority for unsupported
+   behavior.
 
-The MVP intentionally refuses to fake formula-cache writeback with `Range.Value2`,
-because that replaces formula cells. It preserves formulas, reports candidate and
-blocked-writeback details, and leaves full live writeback behind a host probe.
+## How values reach the sheet
+
+Excel has no way to set a formula cell's cached value in place. `Range.Value2`
+replaces the formula outright; the XLL C API's `xlSet` is macro-sheet-only and
+silently does nothing to a worksheet cell; and setting `Value2` then restoring
+the formula re-evaluates it. All three were tested against live Excel and
+failed, each for a different reason. This is a property of Excel treating a
+formula cell's formula and value as one unit owned by its calc engine, which is
+why RTD is the mechanism every market-data vendor uses.
+
+So values arrive through `=LS.LIVE("Sheet!Cell")` cells, backed by an RTD
+server. An RTD value landing marks its dependents dirty, so Excel recalculates
+downstream normally -- which means a handful of live cells trigger a whole
+workbook refresh rather than only updating themselves.
+
+The cells worth wiring up are the ones where Excel does *repeated* work.
+Injecting into an ordinary formula in a linear chain saves nothing, because
+Excel still has to evaluate that cell's precedents. Two structures do have
+multiplicative cost:
+
+- **Data tables** - Excel re-evaluates the source formula's dependency cone
+  once per scenario cell, so a 5x5 two-variable table costs 25 passes.
+  `Convert to Live` replaces the native table with `LS.LIVE` cells and the
+  kernel computes the grid in one parallel pass. `Restore Native` puts the
+  original table back from definitions recorded at conversion time.
+- **Circular components** - Excel iterates the region to convergence.
+
+`WS.LIVE` remains registered as a hidden alias so workbooks converted before
+the rename keep working.
 
 ## Build prerequisites
 
