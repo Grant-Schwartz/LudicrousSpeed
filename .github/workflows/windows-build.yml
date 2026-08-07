@@ -44,7 +44,13 @@ jobs:
           if-no-files-found: error
 
       - name: Package Windows release zip
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # Also run on a manual dispatch. Gating solely on 'push' meant a
+        # hand-triggered build compiled fine and then silently skipped
+        # packaging and releasing, producing no zip -- which looks like a
+        # successful run that just didn't do the thing you wanted.
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -58,7 +64,13 @@ jobs:
           Compress-Archive -Path (Join-Path $staging "*") -DestinationPath (Join-Path $dist "ludicrous-windows-$shortSha.zip") -Force
 
       - name: Create GitHub release for this commit
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # Also run on a manual dispatch. Gating solely on 'push' meant a
+        # hand-triggered build compiled fine and then silently skipped
+        # packaging and releasing, producing no zip -- which looks like a
+        # successful run that just didn't do the thing you wanted.
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main')
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: auto-${{ github.sha }}
