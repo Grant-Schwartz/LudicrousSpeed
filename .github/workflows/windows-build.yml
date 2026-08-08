@@ -33,6 +33,39 @@ jobs:
         shell: pwsh
         run: ./scripts/build_windows.ps1 -Configuration Release
 
+      - name: Set short SHA
+        id: vars
+        shell: pwsh
+        run: |
+          $shortSha = "${{ github.sha }}".Substring(0, 7)
+          "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
+
+      - name: Package beta bundle
+        shell: pwsh
+        run: ./scripts/package_release.ps1 -Version ${{ steps.vars.outputs.short_sha }}
+
+      - name: Smoke test installer script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Push-Location "dist/ludicrous-windows-${{ steps.vars.outputs.short_sha }}"
+          try {
+            ./Install-LudicrousSpeed.ps1
+            ./Install-LudicrousSpeed.ps1 -Uninstall
+
+            foreach ($cmd in "Install.cmd", "Uninstall.cmd") {
+              if (-not (Test-Path $cmd)) { throw "$cmd missing from packaged bundle." }
+              if (-not (Select-String -Path $cmd -Pattern "Install-LudicrousSpeed\.ps1" -Quiet)) {
+                throw "$cmd does not reference Install-LudicrousSpeed.ps1."
+              }
+            }
+            # Not executed here: they end in `pause`, which would hang a
+            # non-interactive CI run. The .ps1 calls above already cover the
+            # actual install/uninstall logic these wrappers just forward to.
+          } finally {
+            Pop-Location
+          }
+
       - name: Upload Windows add-in artifact
         uses: actions/upload-artifact@v4
         with:
@@ -43,31 +76,17 @@ jobs:
             target/release/ludicrous_engine.dll
           if-no-files-found: error
 
-      - name: Package Windows release zip
-        # Also run on a manual dispatch. Gating solely on 'push' meant a
-        # hand-triggered build compiled fine and then silently skipped
-        # packaging and releasing, producing no zip -- which looks like a
-        # successful run that just didn't do the thing you wanted.
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'push' && github.ref == 'refs/heads/main')
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $shortSha = "${{ github.sha }}".Substring(0, 7)
-          $dist = "dist"
-          $staging = Join-Path $dist "ludicrous-windows-$shortSha"
-          New-Item -ItemType Directory -Force -Path $staging | Out-Null
-          Copy-Item "excel-addin/LudicrousSpeed.ExcelAddIn/bin/Release/net48/*" $staging -Recurse -Force
-          Copy-Item "target/release/ludicrous-cli.exe" $staging -Force
-          Copy-Item "target/release/ludicrous_engine.dll" $staging -Force
-          Compress-Archive -Path (Join-Path $staging "*") -DestinationPath (Join-Path $dist "ludicrous-windows-$shortSha.zip") -Force
+      - name: Upload beta bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ludicrous-beta-bundle
+          path: dist/ludicrous-windows-${{ steps.vars.outputs.short_sha }}.zip
+          if-no-files-found: error
 
       - name: Create GitHub release for this commit
-        # Also run on a manual dispatch. Gating solely on 'push' meant a
-        # hand-triggered build compiled fine and then silently skipped
-        # packaging and releasing, producing no zip -- which looks like a
-        # successful run that just didn't do the thing you wanted.
+        # Manual dispatch counts too. Without this a "Run workflow" click
+        # builds and packages cleanly and then silently publishes nothing,
+        # which looks like a build failure and isn't one.
         if: >-
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -78,7 +97,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $shortSha = "${{ github.sha }}".Substring(0, 7)
+          $shortSha = "${{ steps.vars.outputs.short_sha }}"
           gh release create $env:RELEASE_TAG "dist/ludicrous-windows-$shortSha.zip" `
             --title "LudicrousSpeed Windows $shortSha" `
             --notes "Automatic temporary release for commit ${{ github.sha }}." `

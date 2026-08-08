@@ -5,13 +5,21 @@ It provides an Excel-DNA ribbon add-in that snapshots the active workbook, calls
 Rust calculation engine backed by IronCalc, and reports coverage, fallback, and
 benchmark diagnostics.
 
+## Installing a beta build
+
+Prebuilt Windows builds are published on the
+[Releases page](https://github.com/Grant-Schwartz/LudicrousSpeed/releases/latest).
+See [INSTALL.md](INSTALL.md) -- no build tools required.
+
 ## Repository layout
 
 - `crates/ludicrous-engine` - Rust engine and C ABI used by the Excel add-in.
 - `excel-addin/LudicrousSpeed.ExcelAddIn` - Excel-DNA host, ribbon commands, workbook
   snapshot/export, native engine calls, and user reports.
+- `scripts` - Windows build/package scripts and the beta installer.
 - `fixtures` - Synthetic workbook scenarios and fixture notes.
 - `docs` - Architecture and validation notes.
+- `site` - Source for the GitHub Pages landing page.
 
 ## Flow
 
@@ -53,7 +61,7 @@ multiplicative cost:
   original table back from definitions recorded at conversion time.
 - **Circular components** - Excel iterates the region to convergence.
 
-### Migrating a workbook converted before the rename
+## Upgrading from WS.LIVE
 
 `LS.LIVE` is the only live-cell function; the earlier `WS.LIVE` name is gone.
 A workbook converted before the rename holds `=WS.LIVE(...)` formulas, which
