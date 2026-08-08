@@ -60,11 +60,23 @@ namespace LudicrousSpeed.ExcelAddIn
         public void AutoOpen()
         {
             changeTracker.Start();
+            CalculationKeyBinding.Initialize(() => Run("recalculate", includeExcelBaseline: false));
         }
 
         public void AutoClose()
         {
+            CalculationKeyBinding.Shutdown();
             changeTracker.Stop();
+        }
+
+        public void ToggleInterceptF9(IRibbonControl control, bool pressed)
+        {
+            CalculationKeyBinding.SetEnabled(pressed);
+        }
+
+        public bool GetInterceptF9Pressed(IRibbonControl control)
+        {
+            return CalculationKeyBinding.Enabled;
         }
 
         public override string GetCustomUI(string ribbonId)
@@ -96,6 +108,13 @@ namespace LudicrousSpeed.ExcelAddIn
                   onAction='BenchmarkWorkbook'
                   screentip='Benchmark Workbook'
                   supertip='Compare Excel full rebuild timing against the LudicrousSpeed prototype engine.' />
+          <toggleButton id='InterceptF9Toggle'
+                  label='F9 Uses LudicrousSpeed'
+                  imageMso='CalculateNow'
+                  onAction='ToggleInterceptF9'
+                  getPressed='GetInterceptF9Pressed'
+                  screentip='Route F9 to the LudicrousSpeed engine'
+                  supertip='Press F9 to recalculate with LudicrousSpeed instead of Excel. Shift+F9 and Ctrl+Alt+F9 still run Excel&apos;s own calculation. Setting is remembered between sessions.' />
           <toggleButton id='DetailedReportToggle'
                   label='Detailed Report'
                   imageMso='ErrorChecking'
@@ -400,7 +419,9 @@ namespace LudicrousSpeed.ExcelAddIn
                     catch
                     {
                         // A failed propagation pass leaves the LS.LIVE cells
-                        // themselves correct; the user can press F9.
+                        // themselves correct; the user can recalculate again.
+                        // Safe even with F9 intercepted -- that path runs this
+                        // same pipeline, and re-publishing is idempotent.
                     }
                 });
             }

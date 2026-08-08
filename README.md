@@ -61,6 +61,19 @@ multiplicative cost:
   original table back from definitions recorded at conversion time.
 - **Circular components** - Excel iterates the region to convergence.
 
+## F9
+
+The `F9 Uses LudicrousSpeed` toggle routes F9 to the engine instead of Excel's
+calculation, so the accelerator sits on the keystroke people already press. The
+setting persists between sessions.
+
+It is off by default and has not been verified against live Excel. F9 has a
+second job -- pressed in the formula bar with a sub-expression selected, it
+evaluates that fragment in place -- and confirming that still works is the first
+item in the acceptance test in `docs/windows-testing.md`. Shift+F9, Ctrl+Alt+F9
+and Ctrl+Alt+Shift+F9 stay native on purpose, so Excel's own answer is always one
+keystroke away.
+
 ## Upgrading from WS.LIVE
 
 `LS.LIVE` is the only live-cell function; the earlier `WS.LIVE` name is gone.

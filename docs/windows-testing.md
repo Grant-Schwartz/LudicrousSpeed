@@ -173,6 +173,40 @@ threading behavior has not been exercised. Before trusting
 6. Only after 1–5 pass, consider flipping the default in
    `LudicrousSpeedRibbon.AsyncRunEnabled`.
 
+## F9 Interception Acceptance Test (Unverified Feature)
+
+`CalculationKeyBinding` routes F9 to the engine via `Application.OnKey`. It was
+written without access to Windows or Excel. The toggle (`F9 Uses LudicrousSpeed`)
+is off by default and its state persists in
+`HKCU\Software\LudicrousSpeed\InterceptF9`.
+
+**Test 1 is the one that matters.** F9 has a second, unrelated job: pressed
+inside the formula bar with part of a formula selected, it evaluates just that
+fragment in place. Analysts use it constantly to read a term out of a long
+formula. Macros are not supposed to run while a cell is being edited, so OnKey
+should not touch this — but that is reasoning from documentation, not an
+observation, and if it is wrong this feature breaks a core daily workflow.
+
+1. Turn the toggle on. Click into a cell containing a multi-term formula, press
+   F2, select a sub-expression in the formula bar, press F9. It must still
+   resolve to a value in place, and Esc must still cancel out leaving the
+   formula intact. **If the engine runs instead, stop — the feature is not
+   shippable as designed and needs an edit-mode guard before anything else.**
+2. With the toggle off, press F9 and confirm Excel calculates normally.
+3. Turn it on, change an input, press F9, and confirm the status bar shows
+   `LudicrousSpeed: N ms` rather than Excel grinding through a native pass.
+4. Confirm Shift+F9, Ctrl+Alt+F9 and Ctrl+Alt+Shift+F9 still run Excel's own
+   calculation — these are deliberately left native as the comparison escape
+   hatch.
+5. Open a second, unrelated workbook the engine has never seen and press F9.
+   OnKey is application-wide, so this exercises the fallthrough: it should
+   calculate natively, not error.
+6. Toggle off, restart Excel, confirm F9 is native. Toggle on, restart Excel,
+   confirm the setting was remembered and the key is bound at load.
+7. Hold F9 down and confirm the re-entrancy guard stops engine runs stacking up.
+8. Rename `ludicrous_engine.dll` to force a failure, press F9, and confirm it
+   falls through to a native calculation rather than becoming a dead key.
+
 ## Notes
 
 - `ludicrous_engine.dll` must sit beside the Excel add-in output because
