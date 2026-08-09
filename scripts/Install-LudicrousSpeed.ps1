@@ -166,9 +166,25 @@ foreach ($f in @($xllSource, $dllSource)) {
 }
 
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+
+# Copy every .dll in the bundle, not just the engine. The packed .xll does not
+# embed the add-in's managed dependencies under .NET Framework, so
+# Newtonsoft.Json ships beside it -- and installing only the two named files
+# left it behind, producing "Could not load file or assembly 'Newtonsoft.Json'"
+# the moment Excel ran anything. Copying whatever the bundle contains means a
+# new dependency needs no change here.
 Copy-Item $xllSource $installDir -Force
-Copy-Item $dllSource $installDir -Force
+foreach ($dll in Get-ChildItem $scriptDir -Filter "*.dll" -File) {
+    Copy-Item $dll.FullName $installDir -Force
+}
 Get-ChildItem $installDir -File | Unblock-File
+
+# The add-in cannot start without this one, and the failure surfaces as an
+# assembly-load dialog in Excel rather than anything pointing back here.
+$jsonInstalled = Join-Path $installDir "Newtonsoft.Json.dll"
+if (-not (Test-Path $jsonInstalled)) {
+    Write-Warning "Newtonsoft.Json.dll was not in this bundle. Excel will fail to load the add-in with an assembly-load error. Re-download the release zip; if it is genuinely missing from the zip, the packaging step is at fault."
+}
 
 $xllInstalled = Join-Path $installDir "LudicrousSpeed.xll"
 Write-Host "Copied LudicrousSpeed to $installDir"

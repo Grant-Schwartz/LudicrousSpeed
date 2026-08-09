@@ -78,6 +78,14 @@ foreach ($name in $sidecars) {
         Write-Host "Included dependency: $name"
     }
 }
+
+# Not optional. The add-in deserializes every engine response with Json.NET, so
+# a bundle without it installs cleanly and then fails on load with an
+# assembly-load dialog that says nothing about packaging. Fail the build here
+# instead, where the cause is obvious.
+if (-not (Test-Path (Join-Path $staging "Newtonsoft.Json.dll"))) {
+    throw "Newtonsoft.Json.dll was not found in $addinOutput, so the bundle would ship without it and the add-in would fail to load in Excel. Check that the build actually copied it to the output directory."
+}
 Copy-Item (Join-Path $PSScriptRoot "Install-LudicrousSpeed.ps1") $staging -Force
 Copy-Item (Join-Path $PSScriptRoot "Install.cmd") $staging -Force
 Copy-Item (Join-Path $PSScriptRoot "Uninstall.cmd") $staging -Force
