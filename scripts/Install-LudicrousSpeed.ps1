@@ -124,9 +124,45 @@ function Remove-ExcelAutoLoad {
 
     $optionsKey = "HKCU:\Software\Microsoft\Office\$OfficeVersion\Excel\Options"
     $slot = Find-ExistingAutoLoadSlot -OptionsKey $optionsKey -XllPath $XllPath
-    if ($slot) {
-        Remove-ItemProperty -Path $optionsKey -Name $slot -Force
-        Write-Host "Removed auto-load entry $slot (Excel $OfficeVersion)"
+    if (-not $slot) { return }
+
+    Remove-ItemProperty -Path $optionsKey -Name $slot -Force
+    Write-Host "Removed auto-load entry $slot (Excel $OfficeVersion)"
+
+    # Close the hole we just made. Excel reads OPEN, OPEN1, OPEN2... and the
+    # sequence is conventionally contiguous; removing a middle entry and leaving
+    # a gap risks orphaning whichever add-ins sat after it, which would be us
+    # breaking somebody else's tooling on our way out.
+    #
+    # Order matters for safety: rewrite the survivors compacted FIRST, then trim
+    # the now-surplus tail. Deleting first would leave a window in which another
+    # add-in's registration exists nowhere, and a failure mid-loop would lose it
+    # outright.
+    $props = Get-ItemProperty -Path $optionsKey -ErrorAction SilentlyContinue
+    if (-not $props) { return }
+
+    $slotNames = @("OPEN") + (1..50 | ForEach-Object { "OPEN$_" })
+    $surviving = @()
+    foreach ($name in $slotNames) {
+        if ($props.PSObject.Properties.Name -contains $name) {
+            $surviving += $props.$name
+        }
+    }
+
+    for ($i = 0; $i -lt $surviving.Count; $i++) {
+        $target = if ($i -eq 0) { "OPEN" } else { "OPEN$i" }
+        Set-ItemProperty -Path $optionsKey -Name $target -Value $surviving[$i]
+    }
+
+    for ($i = $surviving.Count; $i -lt $slotNames.Count; $i++) {
+        $name = $slotNames[$i]
+        if ($props.PSObject.Properties.Name -contains $name) {
+            Remove-ItemProperty -Path $optionsKey -Name $name -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if ($surviving.Count -gt 0) {
+        Write-Host "Renumbered $($surviving.Count) remaining add-in entr$(if ($surviving.Count -eq 1) { 'y' } else { 'ies' }) to keep the sequence contiguous (Excel $OfficeVersion)"
     }
 }
 
