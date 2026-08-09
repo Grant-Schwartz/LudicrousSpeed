@@ -105,7 +105,7 @@ namespace LudicrousSpeed.ExcelAddIn.Interop
     }
 
     /// <summary>Mirrors the PHASE_* constants in the engine's progress module.</summary>
-    public enum EnginePhase : uint
+    internal enum EnginePhase : uint
     {
         Idle = 0,
         Loading = 1,
@@ -114,7 +114,7 @@ namespace LudicrousSpeed.ExcelAddIn.Interop
         DataTables = 4,
     }
 
-    public readonly struct EngineProgress
+    internal readonly struct EngineProgress
     {
         public EngineProgress(EnginePhase phase, ulong done, ulong total)
         {

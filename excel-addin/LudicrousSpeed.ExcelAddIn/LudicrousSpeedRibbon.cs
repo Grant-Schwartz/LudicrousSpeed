@@ -319,6 +319,9 @@ namespace LudicrousSpeed.ExcelAddIn
         {
             WorkbookSnapshot? snapshot = null;
             var calculationGuard = ExcelCalculationGuard.Enter(disableNativeDataTables: !includeExcelBaseline);
+            // Declared out here so the catch below can stop it: the failure it
+            // handles can happen after the timer has started.
+            WinFormsTimer? progressTimer = null;
             try
             {
                 var excelBaselineMs = MeasureExcelBaseline(includeExcelBaseline);
@@ -336,7 +339,7 @@ namespace LudicrousSpeed.ExcelAddIn
                 // RunSync holds the UI thread inside the native call, so no
                 // timer can tick and the status bar cannot repaint until the
                 // run is already over.
-                var progressTimer = StartProgressTimer();
+                progressTimer = StartProgressTimer();
 
                 Task.Run(() =>
                 {
@@ -408,7 +411,7 @@ namespace LudicrousSpeed.ExcelAddIn
         private WinFormsTimer StartProgressTimer()
         {
             var timer = new WinFormsTimer { Interval = 250 };
-            timer.Tick += (_, _) =>
+            timer.Tick += (sender, args) =>
             {
                 try
                 {
