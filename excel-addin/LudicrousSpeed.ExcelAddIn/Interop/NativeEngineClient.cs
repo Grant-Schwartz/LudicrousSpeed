@@ -67,10 +67,94 @@ namespace LudicrousSpeed.ExcelAddIn.Interop
             return Encoding.UTF8.GetString(buffer);
         }
 
+        /// <summary>
+        /// Reads how far the current run has got. Safe to call while
+        /// <see cref="Run"/> is in flight on another thread -- that is the
+        /// point of it, since Run blocks for the length of the calculation.
+        ///
+        /// Returns an idle snapshot rather than throwing if the native library
+        /// is missing or too old to export the symbol. A progress indicator is
+        /// a courtesy; failing to read one must never take down a run that is
+        /// otherwise working.
+        /// </summary>
+        public EngineProgress ReadProgress()
+        {
+            try
+            {
+                ludicrous_progress(out var phase, out var done, out var total);
+                return new EngineProgress((EnginePhase)phase, done, total);
+            }
+            catch (DllNotFoundException)
+            {
+                return default;
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return default;
+            }
+        }
+
         [DllImport(WindowsDll, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         private static extern IntPtr ludicrous_run_json(string requestJson);
 
         [DllImport(WindowsDll, CallingConvention = CallingConvention.Cdecl)]
         private static extern void ludicrous_free_string(IntPtr value);
+
+        [DllImport(WindowsDll, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void ludicrous_progress(out uint phase, out ulong done, out ulong total);
+    }
+
+    /// <summary>Mirrors the PHASE_* constants in the engine's progress module.</summary>
+    public enum EnginePhase : uint
+    {
+        Idle = 0,
+        Loading = 1,
+        Analyzing = 2,
+        Evaluating = 3,
+        DataTables = 4,
+    }
+
+    public readonly struct EngineProgress
+    {
+        public EngineProgress(EnginePhase phase, ulong done, ulong total)
+        {
+            Phase = phase;
+            Done = done;
+            Total = total;
+        }
+
+        public EnginePhase Phase { get; }
+
+        public ulong Done { get; }
+
+        /// <summary>Zero means the phase is indeterminate -- show a name, not a percentage.</summary>
+        public ulong Total { get; }
+
+        public bool IsRunning => Phase != EnginePhase.Idle;
+
+        /// <summary>
+        /// Status bar text for this snapshot, in Excel's own idiom -- Excel
+        /// writes "Calculating (8 processors): 42%" there during a native
+        /// recalculation, so a run that reports nothing reads as a hang.
+        /// </summary>
+        public string Describe()
+        {
+            var name = Phase switch
+            {
+                EnginePhase.Loading => "Loading workbook",
+                EnginePhase.Analyzing => "Building dependency graph",
+                EnginePhase.Evaluating => "Evaluating",
+                EnginePhase.DataTables => "Data tables",
+                _ => "Working",
+            };
+
+            if (Total == 0)
+            {
+                return $"LudicrousSpeed: {name}...";
+            }
+
+            var percent = (int)(Done * 100 / Total);
+            return $"LudicrousSpeed: {name} {Done:N0}/{Total:N0} ({percent}%)";
+        }
     }
 }

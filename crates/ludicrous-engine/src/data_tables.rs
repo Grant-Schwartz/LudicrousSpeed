@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::thread;
 use std::time::Instant;
 
+use crate::progress;
+
 use ironcalc::base::{
     cell::CellValue,
     expressions::{
@@ -392,6 +394,10 @@ pub(crate) fn evaluate_data_tables(
     }
 
     let started = Instant::now();
+    // The one phase with a unit the user would recognise. Counting tables
+    // rather than scenario cells keeps the number stable while a table is
+    // in flight, at the cost of moving in jumps when tables differ in size.
+    progress::begin_with_total(progress::PHASE_DATA_TABLES, table_indexes.len() as u64);
     let parallelism = thread::available_parallelism()
         .map(|count| count.get())
         .unwrap_or(1)
@@ -423,6 +429,10 @@ pub(crate) fn evaluate_data_tables(
                             ),
                         ));
                     }
+                    // Still count them: a worker that cannot load the model has
+                    // finished with its chunk, and leaving the total unreached
+                    // would strand the indicator just short of complete.
+                    progress::advance(chunk.len() as u64);
                     return counts;
                 };
                 let mut counts = ScenarioCounts::default();
@@ -431,6 +441,7 @@ pub(crate) fn evaluate_data_tables(
                         &worker_model,
                         &data_tables[*table_index],
                     ));
+                    progress::advance(1);
                 }
                 counts
             }));

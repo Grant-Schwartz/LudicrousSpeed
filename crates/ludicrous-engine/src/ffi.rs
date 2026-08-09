@@ -13,6 +13,34 @@ pub extern "C" fn ludicrous_run_json(request_json: *const c_char) -> *mut c_char
     string_to_ptr(response)
 }
 
+/// Reads the current run's progress. Safe to call from any thread at any time,
+/// including while `ludicrous_run_json` is in flight on another thread -- which
+/// is the entire point, since that call blocks for the length of the run.
+///
+/// Null pointers are skipped, so a caller that only wants the phase can pass
+/// null for the counts. When no run is in flight the phase is `PHASE_IDLE` (0).
+/// A `total` of zero means the current phase is indeterminate: show a phase
+/// name, not a percentage.
+#[no_mangle]
+pub extern "C" fn ludicrous_progress(
+    phase_out: *mut u32,
+    done_out: *mut u64,
+    total_out: *mut u64,
+) {
+    let (phase, done, total) = crate::progress::snapshot();
+    unsafe {
+        if !phase_out.is_null() {
+            *phase_out = phase;
+        }
+        if !done_out.is_null() {
+            *done_out = done;
+        }
+        if !total_out.is_null() {
+            *total_out = total;
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn ludicrous_free_string(ptr: *mut c_char) {
     if ptr.is_null() {

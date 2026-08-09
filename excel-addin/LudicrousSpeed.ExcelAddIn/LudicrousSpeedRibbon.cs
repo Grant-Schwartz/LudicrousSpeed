@@ -10,6 +10,7 @@ using LudicrousSpeed.ExcelAddIn.Interop;
 using LudicrousSpeed.ExcelAddIn.Models;
 using LudicrousSpeed.ExcelAddIn.Services;
 using Excel = Microsoft.Office.Interop.Excel;
+using WinFormsTimer = System.Windows.Forms.Timer;
 
 namespace LudicrousSpeed.ExcelAddIn
 {
@@ -329,6 +330,14 @@ namespace LudicrousSpeed.ExcelAddIn
 
                 SetStatusBar("LudicrousSpeed is calculating in the background...");
 
+                // Excel writes "Calculating (8 processors): 42%" to the status
+                // bar during its own recalculation, so a long run that reports
+                // nothing reads as a hang. This only works on the async path:
+                // RunSync holds the UI thread inside the native call, so no
+                // timer can tick and the status bar cannot repaint until the
+                // run is already over.
+                var progressTimer = StartProgressTimer();
+
                 Task.Run(() =>
                 {
                     EngineResponse? response = null;
@@ -368,6 +377,7 @@ namespace LudicrousSpeed.ExcelAddIn
                         }
                         finally
                         {
+                            StopProgressTimer(progressTimer);
                             ClearStatusBar();
                             calculationGuard.Dispose();
                             TryDeleteSnapshot(snapshotForBackgroundCall);
@@ -377,10 +387,61 @@ namespace LudicrousSpeed.ExcelAddIn
             }
             catch (Exception ex)
             {
+                StopProgressTimer(progressTimer);
                 ClearStatusBar();
                 calculationGuard.Dispose();
                 TryDeleteSnapshot(snapshot);
                 ShowError(ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Polls the engine's progress counters from Excel's UI thread. A
+        /// WinForms timer rather than a background loop precisely because its
+        /// tick arrives on the UI thread, which is the only place the Excel
+        /// object model may be touched -- so the status bar write needs no
+        /// marshalling.
+        ///
+        /// 250ms is fast enough to look live and slow enough that the poll
+        /// itself never shows up next to a multi-second calculation.
+        /// </summary>
+        private WinFormsTimer StartProgressTimer()
+        {
+            var timer = new WinFormsTimer { Interval = 250 };
+            timer.Tick += (_, _) =>
+            {
+                try
+                {
+                    var progress = engineClient.ReadProgress();
+                    if (progress.IsRunning)
+                    {
+                        SetStatusBar(progress.Describe());
+                    }
+                }
+                catch
+                {
+                    // Never let a progress read break a run that is working.
+                }
+            };
+            timer.Start();
+            return timer;
+        }
+
+        private static void StopProgressTimer(WinFormsTimer? timer)
+        {
+            if (timer == null)
+            {
+                return;
+            }
+
+            try
+            {
+                timer.Stop();
+                timer.Dispose();
+            }
+            catch
+            {
+                // Nothing useful to do; the timer dies with the add-in.
             }
         }
 

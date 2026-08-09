@@ -4,6 +4,7 @@ mod ffi;
 mod graph;
 mod ironcalc_engine;
 mod model;
+pub mod progress;
 mod xlsx_sanitize;
 
 pub use engine::{CalcEngine, LudicrousSpeedEngine};

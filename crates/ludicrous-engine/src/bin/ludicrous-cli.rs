@@ -1,16 +1,20 @@
 use std::env;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use ludicrous_engine::{
-    CalcMode, CalcResult, CalculationStrategy, ChangedCell, FallbackReason, LudicrousSpeedEngine,
-    WorkbookSnapshot,
+    progress, CalcMode, CalcResult, CalculationStrategy, ChangedCell, FallbackReason,
+    LudicrousSpeedEngine, WorkbookSnapshot,
 };
 
 fn main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
         eprintln!(
-            "usage: ludicrous-cli <workbook.xlsx> [analyze|recalculate|benchmark] [--json] [--no-analytics] [--eval-data-tables] [--runs N] [--edit Sheet!A1=value]"
+            "usage: ludicrous-cli <workbook.xlsx> [analyze|recalculate|benchmark] [--json] [--no-analytics] [--eval-data-tables] [--progress] [--runs N] [--edit Sheet!A1=value]"
         );
         std::process::exit(2);
     };
@@ -24,6 +28,7 @@ fn main() {
     let mut edit_cells = Vec::new();
     let mut include_analytics = true;
     let mut mode_was_set = false;
+    let mut show_progress = false;
 
     let mut index = 1;
     while index < args.len() {
@@ -31,6 +36,7 @@ fn main() {
             "--json" => output_json = true,
             "--no-analytics" => include_analytics = false,
             "--eval-data-tables" => evaluate_data_tables = true,
+            "--progress" => show_progress = true,
             "--runs" => {
                 runs_was_set = true;
                 index += 1;
@@ -116,6 +122,26 @@ fn main() {
     };
 
     let engine = LudicrousSpeedEngine::new();
+
+    // Polls the same counters the Excel host polls, so this exercises the real
+    // mechanism rather than a CLI-only imitation of it.
+    let progress_stop = Arc::new(AtomicBool::new(false));
+    let progress_thread = if show_progress {
+        let stop = Arc::clone(&progress_stop);
+        Some(thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let (phase, done, total) = progress::snapshot();
+                if phase != progress::PHASE_IDLE {
+                    eprint!("\r\x1b[2K{}", format_progress(phase, done, total));
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            eprint!("\r\x1b[2K");
+        }))
+    } else {
+        None
+    };
+
     let mut results = Vec::new();
     for run_index in 0..runs {
         let mut run_snapshot = snapshot.clone();
@@ -155,12 +181,32 @@ fn main() {
         }
     }
 
+    progress_stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = progress_thread {
+        let _ = handle.join();
+    }
+
     if output_json {
         if runs == 1 {
             println!("{}", serde_json::to_string_pretty(&results[0]).unwrap());
         } else {
             println!("{}", serde_json::to_string_pretty(&results).unwrap());
         }
+    }
+}
+
+fn format_progress(phase: u32, done: u64, total: u64) -> String {
+    let name = match phase {
+        progress::PHASE_LOADING => "Loading workbook",
+        progress::PHASE_ANALYZING => "Building dependency graph",
+        progress::PHASE_EVALUATING => "Evaluating",
+        progress::PHASE_DATA_TABLES => "Data tables",
+        _ => "Working",
+    };
+    if total > 0 {
+        format!("{name}: {done}/{total} ({}%)", done * 100 / total)
+    } else {
+        format!("{name}...")
     }
 }
 

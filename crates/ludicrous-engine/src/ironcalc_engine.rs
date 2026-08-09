@@ -470,6 +470,11 @@ fn load_build_evaluate(snapshot: &WorkbookSnapshot) -> Result<LoadedWorkbook, En
     let data_tables = merge_data_table_overrides(data_tables, &snapshot.data_table_overrides);
     let load_ms = load_started.elapsed().as_millis();
 
+    // Phase boundaries live here rather than around plan()/calculate() in the
+    // engine, because that split does not match where the time goes: the load
+    // happens inside calculate(), so labelling by call site reported a cold
+    // ALMS run as ~6.6s of "Evaluating" when most of it was the import.
+    crate::progress::begin(crate::progress::PHASE_ANALYZING);
     let graph_started = Instant::now();
     let mut graph = build_dependency_graph(&model);
     let cached_formula_values = collect_circular_formula_values(&model, &graph, true);
@@ -481,6 +486,7 @@ fn load_build_evaluate(snapshot: &WorkbookSnapshot) -> Result<LoadedWorkbook, En
     let structure_hash = graph.structure_hash().to_string();
     let graph_build_ms = graph_started.elapsed().as_millis();
 
+    crate::progress::begin(crate::progress::PHASE_EVALUATING);
     let eval_started = Instant::now();
     model.evaluate();
     let ironcalc_ms = eval_started.elapsed().as_millis();
