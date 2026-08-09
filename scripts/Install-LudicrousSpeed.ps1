@@ -19,7 +19,13 @@ Usage:
   .\Install-LudicrousSpeed.ps1 -Uninstall
 #>
 param(
-    [switch]$Uninstall
+    [switch]$Uninstall,
+
+    # Where the bundle's files are. Normally left empty and discovered below.
+    # Install.cmd passes it explicitly because it runs this script's *text*
+    # rather than the file, which leaves the usual self-location properties
+    # empty -- see the comment on $scriptDir.
+    [string]$BundleDir
 )
 
 $ErrorActionPreference = "Stop"
@@ -191,7 +197,23 @@ if ($Uninstall) {
     return
 }
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Three ways to find our own folder, because the script is not always run as a
+# file. Under a policy-enforced AllSigned execution policy an unsigned .ps1
+# cannot be loaded from disk at all, so Install.cmd falls back to executing this
+# script's text as a scriptblock -- and in that mode both $PSScriptRoot and
+# $MyInvocation.MyCommand.Path are empty, hence -BundleDir.
+$scriptDir = if ($BundleDir) {
+    $BundleDir
+} elseif ($PSScriptRoot) {
+    $PSScriptRoot
+} else {
+    Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+
+if (-not $scriptDir) {
+    throw "Could not determine which folder this script is running from. Pass -BundleDir with the path to the unzipped LudicrousSpeed folder."
+}
+
 $xllSource = Join-Path $scriptDir "LudicrousSpeed.xll"
 $dllSource = Join-Path $scriptDir "ludicrous_engine.dll"
 

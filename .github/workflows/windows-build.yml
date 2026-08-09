@@ -50,7 +50,13 @@ jobs:
           $ErrorActionPreference = "Stop"
           Push-Location "dist/ludicrous-windows-${{ steps.vars.outputs.short_sha }}"
           try {
-            ./Install-LudicrousSpeed.ps1
+            # Invoke the way Install.cmd does -- as a scriptblock built from the
+            # file's text, with -BundleDir passed explicitly -- rather than
+            # running the .ps1 as a file. The wrappers stopped loading it as a
+            # file so it survives a policy-enforced AllSigned execution policy,
+            # and testing the file path would exercise a route no user takes.
+            $installer = [scriptblock]::Create((Get-Content -Raw -LiteralPath "./Install-LudicrousSpeed.ps1"))
+            & $installer -BundleDir (Get-Location).Path
 
             # Assert on what landed in the install directory, not just that the
             # script exited 0. The first release with this installer copied only
@@ -64,7 +70,7 @@ jobs:
               }
             }
 
-            ./Install-LudicrousSpeed.ps1 -Uninstall
+            & $installer -BundleDir (Get-Location).Path -Uninstall
             if (Test-Path $installed) { throw "Uninstall left $installed behind." }
 
             foreach ($cmd in "Install.cmd", "Uninstall.cmd") {
