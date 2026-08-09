@@ -250,8 +250,29 @@ namespace LudicrousSpeed.ExcelAddIn
             }
         }
 
+        /// <summary>
+        /// True from the moment a run starts until it has finished reporting.
+        /// Only ever read or written on Excel's UI thread -- both entry points
+        /// (ribbon callbacks and the F9 macro) arrive there, and the async
+        /// path's completion is marshalled back via QueueAsMacro -- so it needs
+        /// no synchronisation.
+        ///
+        /// The sync path is self-limiting: it blocks the UI thread, so a second
+        /// run cannot be started while one is going. The async path is not, and
+        /// F9 makes starting one trivial -- a held-down key would otherwise
+        /// stack engine runs that then serialise behind the engine's own lock.
+        /// </summary>
+        private bool runInFlight;
+
         private void Run(string mode, bool includeExcelBaseline)
         {
+            if (runInFlight)
+            {
+                SetStatusBar("LudicrousSpeed is already calculating...");
+                return;
+            }
+
+            runInFlight = true;
             if (AsyncRunEnabled)
             {
                 RunAsync(mode, includeExcelBaseline);
@@ -291,6 +312,7 @@ namespace LudicrousSpeed.ExcelAddIn
             }
             finally
             {
+                runInFlight = false;
                 TryDeleteSnapshot(snapshot);
             }
         }
@@ -380,6 +402,9 @@ namespace LudicrousSpeed.ExcelAddIn
                         }
                         finally
                         {
+                            // Runs on Excel's UI thread via QueueAsMacro, which
+                            // is what makes clearing the flag here safe.
+                            runInFlight = false;
                             StopProgressTimer(progressTimer);
                             ClearStatusBar();
                             calculationGuard.Dispose();
@@ -390,6 +415,9 @@ namespace LudicrousSpeed.ExcelAddIn
             }
             catch (Exception ex)
             {
+                // Reached only if the failure happened before the background
+                // task was handed off, so nothing else will clear this.
+                runInFlight = false;
                 StopProgressTimer(progressTimer);
                 ClearStatusBar();
                 calculationGuard.Dispose();
