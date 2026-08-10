@@ -36,14 +36,7 @@ jobs:
         shell: pwsh
         run: ./scripts/build_windows.ps1 -Configuration Release -SkipOutlook
 
-      # Non-blocking on purpose, and temporarily. The Outlook guard is still
-      # being written; package_release.ps1 already packages without it, so
-      # letting its build gate the pipeline would stop the finished Excel
-      # add-in shipping over unfinished code that no release depends on. The
-      # step still reports red, so the failure stays visible rather than
-      # silently accepted. Remove continue-on-error once it compiles.
       - name: Build Outlook guard
-        continue-on-error: true
         shell: pwsh
         run: ./scripts/build_windows.ps1 -Configuration Release -OutlookOnly -SkipTests
 
