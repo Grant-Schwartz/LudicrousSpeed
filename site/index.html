@@ -637,6 +637,7 @@
     cells = [];
     for (var i = 0; i < N; i++) cells.push(spawn());
     if (reduceMotion) {
+      for (var j = 0; j < cells.length; j++) cells[j].age = 1;
       drawStatic();
     } else {
       start();
