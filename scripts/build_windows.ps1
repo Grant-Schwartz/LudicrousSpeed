@@ -2,7 +2,16 @@ param(
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
 
-    [switch]$SkipTests
+    [switch]$SkipTests,
+
+    # Build only the Outlook attachment guard, or only everything else. CI runs
+    # the script twice, once each way, so a failure is attributed to a project
+    # by which step went red -- Actions logs on this repo need admin rights to
+    # read, so a single combined step reports "something failed" and nothing
+    # more. The two builds share no code, so splitting them costs nothing.
+    [switch]$SkipOutlook,
+
+    [switch]$OutlookOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,41 +52,45 @@ Write-Host "Repo: $repoRoot"
 Write-Host "Configuration: $Configuration"
 Write-Host ""
 
-if (-not $SkipTests) {
+if (-not $SkipTests -and -not $OutlookOnly) {
     Write-Host "Running Rust tests..."
     Invoke-Native "cargo" "test" "-p" "ludicrous-engine"
     Write-Host ""
 }
 
-Write-Host "Building Rust native engine..."
-Invoke-Native "cargo" @cargoBuildArgs
+if (-not $OutlookOnly) {
+    Write-Host "Building Rust native engine..."
+    Invoke-Native "cargo" @cargoBuildArgs
 
-if (-not (Test-Path $engineDll)) {
-    throw "Expected native engine DLL was not produced: $engineDll"
+    if (-not (Test-Path $engineDll)) {
+        throw "Expected native engine DLL was not produced: $engineDll"
+    }
+
+    Write-Host ""
+    Write-Host "Building Excel add-in..."
+    Invoke-Native "dotnet" "build" $addinProject "-c" $Configuration
+
+    if (-not (Test-Path $addinOutput)) {
+        throw "Expected add-in output directory was not produced: $addinOutput"
+    }
+
+    Write-Host ""
+    Write-Host "Copying native engine DLL beside add-in output..."
+    Copy-Item $engineDll $addinOutput -Force
 }
-
-Write-Host ""
-Write-Host "Building Excel add-in..."
-Invoke-Native "dotnet" "build" $addinProject "-c" $Configuration
-
-if (-not (Test-Path $addinOutput)) {
-    throw "Expected add-in output directory was not produced: $addinOutput"
-}
-
-Write-Host ""
-Write-Host "Copying native engine DLL beside add-in output..."
-Copy-Item $engineDll $addinOutput -Force
 
 # The Outlook attachment guard shares nothing with the engine -- it reads saved
 # workbook files, not live ones -- so it builds independently and its failure
 # says nothing about the Excel add-in.
-Write-Host ""
-Write-Host "Building Outlook attachment guard..."
-Invoke-Native "dotnet" "build" $outlookProject "-c" $Configuration
+if (-not $SkipOutlook) {
+    Write-Host ""
+    Write-Host "Building Outlook attachment guard..."
+    Invoke-Native "dotnet" "build" $outlookProject "-c" $Configuration
 
-$outlookDll = Join-Path $outlookOutput "LudicrousSpeed.OutlookAddIn.dll"
-if (-not (Test-Path $outlookDll)) {
-    throw "Expected Outlook add-in DLL was not produced: $outlookDll"
+    $outlookDll = Join-Path $outlookOutput "LudicrousSpeed.OutlookAddIn.dll"
+    if (-not (Test-Path $outlookDll)) {
+        throw "Expected Outlook add-in DLL was not produced: $outlookDll"
+    }
 }
 
 $xlls = Get-ChildItem $addinOutput -Filter "*.xll" -ErrorAction SilentlyContinue

@@ -29,9 +29,16 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Build release package
+      # Split so a failure names its project. Actions logs on this repo need
+      # admin rights to read over the API, so a single combined build step can
+      # only report that something went wrong -- these two say which.
+      - name: Build engine and Excel add-in
         shell: pwsh
-        run: ./scripts/build_windows.ps1 -Configuration Release
+        run: ./scripts/build_windows.ps1 -Configuration Release -SkipOutlook
+
+      - name: Build Outlook guard
+        shell: pwsh
+        run: ./scripts/build_windows.ps1 -Configuration Release -OutlookOnly -SkipTests
 
       - name: Set short SHA
         id: vars
