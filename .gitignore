@@ -20,3 +20,7 @@ fixtures/generated/
 fixtures/external/
 outputs/**/*.png
 outputs/**/*.ndjson
+# Real client models used for benchmarking stay local, never committed.
+# Only the synthetic test model is checked in.
+outputs/lbo-fixtures/*.xlsx
+!outputs/lbo-fixtures/WarpSpeed_Complex_LBO_Test_Model.xlsx

@@ -28,10 +28,12 @@ For a faster compile while iterating:
 
 ## CLI Smoke Test
 
-Use the edited-assumption benchmark to avoid measuring only a no-op cache hit:
+Use the edited-assumption benchmark to avoid measuring only a no-op cache hit.
+Point it at a large real LBO model of your own -- these are not checked into
+the repo -- and edit a driver cell that feeds the data tables:
 
 ```powershell
-cargo run -p ludicrous-engine --bin ludicrous-cli -- outputs\lbo-fixtures\ALMS_v11.xlsx benchmark --eval-data-tables --edit "LBO (Share Price)!G9=0.25"
+cargo run -p ludicrous-engine --bin ludicrous-cli -- outputs\lbo-fixtures\<your-model>.xlsx benchmark --eval-data-tables --edit "<Sheet>!<Cell>=0.25"
 ```
 
 Expected shape:
@@ -46,9 +48,9 @@ Expected shape:
 
 1. Add the add-in output folder as a trusted location in Excel.
 2. Load the generated `.xll` through `File > Options > Add-ins > Excel Add-ins > Browse`.
-3. Open `outputs\lbo-fixtures\ALMS_v11.xlsx`.
+3. Open your large real LBO model from `outputs\lbo-fixtures\`.
 4. Click `LudicrousSpeed > Benchmark` once to warm the engine.
-5. Change `LBO (Share Price)!G9` from `20.0%` to `25.0%`.
+5. Change a purchase-premium driver cell from `20.0%` to `25.0%`.
 6. Click `LudicrousSpeed > Benchmark` again.
 7. Check `_LudicrousSpeed_Report`.
 
@@ -105,7 +107,7 @@ verify it. Before trusting it:
    contexts).
 4. Click `Restore Last Results` and confirm Excel runs a full rebuild and the
    calculation mode is restored to what it was before the run.
-5. Repeat on a large real workbook (e.g. `ALMS_v11.xlsx`) with
+5. Repeat on a large real workbook with
    `--eval-data-tables` on, and confirm Excel doesn't hang or show stale
    values in cells `xlSet` touched after a manual F9 recalculation --
    per the XLL SDK, `xlSet`'s value on a worksheet cell is expected to be a
@@ -133,8 +135,8 @@ anything beyond experimentation, verify:
 3. Run `Analyze Workbook` once with the variable set and once unset (file-based
    path). Diff the two `_LudicrousSpeed_Report` sheets' coverage, fallback, and
    fallback-detail sections — they should match exactly except for timing.
-4. Repeat step 3 on `outputs\lbo-fixtures\ALMS_v11.xlsx` (or another large real
-   model) and compare `Rust load ms` between the two runs — this is the number
+4. Repeat step 3 on a large real model and compare `Rust load ms` between the
+   two runs — this is the number
    the feature exists to shrink.
 5. Try a workbook containing a native two-input data table and confirm it
    still falls back correctly (this path doesn't detect data tables yet; see
@@ -152,7 +154,7 @@ threading behavior has not been exercised. Before trusting
 `LUDICROUS_ASYNC_RUN=1` for anything beyond experimentation, verify:
 
 1. `dotnet build` / MSBuild succeeds.
-2. On a large workbook (e.g. `ALMS_v11.xlsx`), click `Recalculate with
+2. On a large workbook, click `Recalculate with
    LudicrousSpeed` with the variable set. Confirm Excel's UI stays responsive
    (you can click cells, switch sheets, see the status bar message) while the
    native call is in flight, rather than showing "Not Responding."

@@ -473,7 +473,8 @@ fn load_build_evaluate(snapshot: &WorkbookSnapshot) -> Result<LoadedWorkbook, En
     // Phase boundaries live here rather than around plan()/calculate() in the
     // engine, because that split does not match where the time goes: the load
     // happens inside calculate(), so labelling by call site reported a cold
-    // ALMS run as ~6.6s of "Evaluating" when most of it was the import.
+    // run of a large real model as ~6.6s of "Evaluating" when most of it was
+    // the import.
     crate::progress::begin(crate::progress::PHASE_ANALYZING);
     let graph_started = Instant::now();
     let mut graph = build_dependency_graph(&model);

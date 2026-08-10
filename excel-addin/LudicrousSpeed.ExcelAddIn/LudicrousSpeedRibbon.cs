@@ -799,10 +799,11 @@ namespace LudicrousSpeed.ExcelAddIn
         /// Calculation mode has to be set to fully Automatic first. Real
         /// models routinely sit in xlCalculationSemiautomatic ("automatic
         /// except data tables") precisely because their tables are too slow to
-        /// tolerate -- ALMS_v11 ships that way. Measuring a baseline in that
-        /// mode silently skips the most expensive thing in the workbook and
-        /// compares LudicrousSpeed-with-tables against Excel-without-them, which
-        /// flatters the result and measures nothing useful.
+        /// tolerate -- the large models we tested ship that way. Measuring a
+        /// baseline in that mode silently skips the most expensive thing in
+        /// the workbook and compares LudicrousSpeed-with-tables against
+        /// Excel-without-them, which flatters the result and measures nothing
+        /// useful.
         /// </summary>
         private static long? MeasureExcelBaseline(bool includeExcelBaseline)
         {
