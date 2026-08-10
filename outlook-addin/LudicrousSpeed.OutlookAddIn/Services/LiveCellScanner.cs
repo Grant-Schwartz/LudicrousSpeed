@@ -167,7 +167,6 @@ namespace LudicrousSpeed.OutlookAddIn.Services
 
                 if (budget <= 0)
                 {
-                    scan.Inconclusive = "workbook is larger than this check will read";
                     break;
                 }
 
@@ -189,6 +188,13 @@ namespace LudicrousSpeed.OutlookAddIn.Services
                 scan.Sheets.Add(DescribeSheet(sheetNames, entry.FullName));
             }
 
+            // Set after the loop rather than inside it, so a budget exhausted
+            // partway through the final worksheet is reported too.
+            if (budget <= 0)
+            {
+                scan.Inconclusive = "workbook is larger than this check will read";
+            }
+
             if (binary && scan.LiveCellCount > 0)
             {
                 // No sheet name map for a binary workbook, so the metadata
@@ -201,7 +207,7 @@ namespace LudicrousSpeed.OutlookAddIn.Services
 
         private static bool IsWorksheetPart(string entryPath, bool binary)
         {
-            if (entryPath.IndexOf("xl/worksheets/", StringComparison.OrdinalIgnoreCase) != 0)
+            if (!entryPath.StartsWith("xl/worksheets/", StringComparison.OrdinalIgnoreCase))
             {
                 return false;
             }

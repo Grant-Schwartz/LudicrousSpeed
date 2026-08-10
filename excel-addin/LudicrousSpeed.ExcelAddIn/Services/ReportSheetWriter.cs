@@ -26,9 +26,9 @@ namespace LudicrousSpeed.ExcelAddIn.Services
         /// problems found and are what actually make a report slow, so the
         /// default run writes only the fixed summary block.
         /// </summary>
-        public void Write(EngineResponse response, HostRunMetrics hostMetrics, bool detailed)
+        public void Write(EngineResponse response, HostRunMetrics hostMetrics, bool enabled, bool detailed)
         {
-            if (!detailed)
+            if (!enabled)
             {
                 // Reporting is opt-in. With the toggle off nothing is written
                 // at all -- not even a summary block -- so a run costs only
@@ -72,6 +72,59 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             void Add(string label, object? value) =>
                 rows.Add(new KeyValuePair<string, object?>(label, value));
 
+            // The summary answers three questions, in the order a modeller asks
+            // them: how long did it take, how much of my workbook did the engine
+            // actually do, and is there anything I should not trust. Everything
+            // that only makes sense to whoever wrote the engine lives under Dev
+            // Mode below.
+            Add("Run", DateTime.Now.ToString("HH:mm:ss"));
+            Add("Time taken", $"{hostMetrics.LudicrousEndToEndMs / 1000.0:0.0} s");
+            if (hostMetrics.ExcelBaselineMs.HasValue)
+            {
+                Add("Excel would have taken", $"{hostMetrics.ExcelBaselineMs.Value / 1000.0:0.0} s");
+                if (hostMetrics.EndToEndSpeedupVsExcel.HasValue)
+                {
+                    Add("Faster by", $"{hostMetrics.EndToEndSpeedupVsExcel.Value:0.0}x");
+                }
+            }
+
+            Add("", null);
+            var covered = coverage.FormulaCells - coverage.FallbackFormulaCells;
+            Add("Formulas calculated by LudicrousSpeed", covered);
+            Add("Formulas left to Excel", coverage.FallbackFormulaCells);
+            if (coverage.FormulaCells > 0)
+            {
+                Add("Coverage", $"{covered * 100.0 / coverage.FormulaCells:0.0}%");
+            }
+
+            if (dataTables.DataTableCount > 0)
+            {
+                Add("", null);
+                Add("Data tables computed", dataTables.DataTableCount);
+                Add("Scenario cells", dataTables.DataTableCells);
+                if (dataTables.MismatchedDataTableCells > 0)
+                {
+                    Add("Cells that disagree with Excel's cached values",
+                        dataTables.MismatchedDataTableCells);
+                }
+
+                if (dataTables.StaleCacheDataTableCells > 0)
+                {
+                    Add("Cells where Excel's cache was stale (not a LudicrousSpeed error)",
+                        dataTables.StaleCacheDataTableCells);
+                }
+            }
+
+            if (!detailed)
+            {
+                FlushRows(sheet, rows, detailed);
+                started.Stop();
+                hostMetrics.ReportWriteMs = started.ElapsedMilliseconds;
+                return;
+            }
+
+            Add("", null);
+            Add("--- Dev Mode ---", null);
             Add("Status", "Complete");
             Add("", null);
             Add("Formula cells", coverage.FormulaCells);
@@ -116,7 +169,6 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             Add("Writeback mode", result.Writeback.Mode);
             Add("Candidate cells", result.Writeback.ValueCellsToUpdate);
             Add("Host writeback status", hostMetrics.WritebackStatus);
-            Add("Report detail", detailed ? "detailed (audit)" : "summary");
 
             if (detailed)
             {

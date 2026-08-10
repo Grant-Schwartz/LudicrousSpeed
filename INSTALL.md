@@ -11,11 +11,25 @@ LudicrousSpeed ships as a prebuilt Windows Excel add-in. No build tools required
 
 Everything the installer does is per-user (no admin rights, no UAC prompt).
 
+## Optional: the Outlook attachment guard
+
+`Convert to Live` makes a workbook depend on this add-in — anyone who opens it without LudicrousSpeed installed sees `#NAME?` where the sensitivity tables should be. The attachment guard warns you when you attach such a workbook to an email, and again when you hit Send, so you can run **Restore Native** first.
+
+1. **Close Outlook.** Windows won't let the file be replaced while Outlook has it loaded.
+2. From the same unzipped folder, double-click **InstallOutlookGuard.cmd**.
+3. Start Outlook. Under **File > Options > Add-ins** you should see *LudicrousSpeed Attachment Guard* listed as active.
+
+This is classic Windows desktop Outlook only — the new Outlook for Windows, Outlook on the web, and Outlook for Mac don't load COM add-ins.
+
+It installs and uninstalls independently of the Excel add-in, so you can have either, both, or neither. If it ever seems to be misbehaving, set the environment variable `LUDICROUS_OUTLOOK_GUARD=0` and restart Outlook to load it inert, and check `%LOCALAPPDATA%\LudicrousSpeed\outlook-guard.log`.
+
 ## Uninstalling
 
 From the same unzipped folder, double-click **Uninstall.cmd**.
 
 This removes the copied files, the Trust Center entry, and the auto-load registration, and reminds you to also remove the add-in from Excel's Add-ins list if it's still showing there.
+
+If you installed the attachment guard, close Outlook and double-click **UninstallOutlookGuard.cmd** as well.
 
 ## Heads up
 

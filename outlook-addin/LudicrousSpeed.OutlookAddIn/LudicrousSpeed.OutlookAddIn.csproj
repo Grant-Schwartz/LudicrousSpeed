@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>LudicrousSpeed.OutlookAddIn</RootNamespace>
+    <AssemblyName>LudicrousSpeed.OutlookAddIn</AssemblyName>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+
+    <!--
+      Outlook loads this through the mscoree shim, so it has to run in
+      whichever bitness the host happens to be. Prefer32Bit would quietly make
+      the assembly refuse to load into 64-bit Outlook.
+    -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+
+    <!--
+      The installer writes the COM registration itself, per-user, so no
+      regasm step and no admin rights. See scripts\Install-OutlookGuard.ps1.
+    -->
+    <RegisterForComInterop>false</RegisterForComInterop>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      EmbedInteropTypes matters more than it looks. A COM add-in is loaded by
+      Outlook, so the CLR's probing path is Outlook's own folder, not ours --
+      a dependency sitting next to this DLL would simply not be found, and the
+      add-in would fail at load with an assembly-load error pointing nowhere
+      useful. Embedding the interop types it uses keeps the whole add-in to a
+      single file with nothing to resolve.
+    -->
+    <PackageReference Include="Microsoft.Office.Interop.Outlook" Version="15.0.4797.1004">
+      <EmbedInteropTypes>true</EmbedInteropTypes>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      ZipArchive lives here; ZipFile lives in System.IO.Compression.FileSystem,
+      which .NET Framework projects reference by default. Only the first needs
+      saying out loud.
+    -->
+    <Reference Include="System.IO.Compression" />
+
+    <!--
+      ItemSend hands over a bare object, and mail, meeting requests and task
+      requests share no interface that exposes Attachments, so AttachmentGuard
+      asks for it late-bound. That needs the C# dynamic binder, which the
+      .NET Framework SDK's default reference set does not reliably include.
+    -->
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
+</Project>

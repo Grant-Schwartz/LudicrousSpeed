@@ -34,22 +34,41 @@ namespace LudicrousSpeed.ExcelAddIn
             Environment.GetEnvironmentVariable("LUDICROUS_ASYNC_RUN") == "1";
 
         /// <summary>
-        /// Audit/dev view. Off by default because the detailed sections scale
-        /// with how many problems a run found -- per-fallback samples, data
-        /// table diagnostics, writeback failures and the separate detail
-        /// sheet -- and on a large model that costs more than the calculation
-        /// being reported on.
+        /// Write the summary sheet after a run. Off by default: creating the
+        /// sheet, clearing it and writing to it are all COM round trips that
+        /// exist purely for analysis, and on a large model they cost more than
+        /// the calculation being reported on.
         /// </summary>
-        private bool detailedReport;
+        private bool reportEnabled;
 
-        public void ToggleDetailedReport(IRibbonControl control, bool pressed)
+        /// <summary>
+        /// Everything the engine measured, rather than the handful of numbers
+        /// that answer "did this work and can I trust it". Implies
+        /// <see cref="reportEnabled"/>.
+        /// </summary>
+        private bool devMode;
+
+        /// <summary>Anything gets written at all.</summary>
+        private bool ReportingOn => reportEnabled || devMode;
+
+        public void ToggleReport(IRibbonControl control, bool pressed)
         {
-            detailedReport = pressed;
+            reportEnabled = pressed;
         }
 
-        public bool GetDetailedReportPressed(IRibbonControl control)
+        public bool GetReportPressed(IRibbonControl control)
         {
-            return detailedReport;
+            return ReportingOn;
+        }
+
+        public void ToggleDevMode(IRibbonControl control, bool pressed)
+        {
+            devMode = pressed;
+        }
+
+        public bool GetDevModePressed(IRibbonControl control)
+        {
+            return devMode;
         }
 
         public LudicrousSpeedRibbon()
@@ -88,13 +107,6 @@ namespace LudicrousSpeed.ExcelAddIn
     <tabs>
       <tab id='LudicrousSpeedTab' label='LudicrousSpeed'>
         <group id='LudicrousSpeedCalcGroup' label='Calculation'>
-          <button id='AnalyzeWorkbookButton'
-                  label='Analyze Workbook'
-                  size='large'
-                  imageMso='ErrorChecking'
-                  onAction='AnalyzeWorkbook'
-                  screentip='Analyze Workbook'
-                  supertip='Scan the active workbook and report IronCalc coverage and fallback regions.' />
           <button id='RecalculateWorkbookButton'
                   label='Recalculate with LudicrousSpeed'
                   size='large'
@@ -116,15 +128,29 @@ namespace LudicrousSpeed.ExcelAddIn
                   getPressed='GetInterceptF9Pressed'
                   screentip='Route F9 to the LudicrousSpeed engine'
                   supertip='Press F9 to recalculate with LudicrousSpeed instead of Excel. Shift+F9 and Ctrl+Alt+F9 still run Excel&apos;s own calculation. Setting is remembered between sessions.' />
-          <toggleButton id='DetailedReportToggle'
-                  label='Detailed Report'
+          <toggleButton id='ReportToggle'
+                  label='Report'
                   imageMso='ErrorChecking'
-                  onAction='ToggleDetailedReport'
-                  getPressed='GetDetailedReportPressed'
-                  screentip='Detailed Report (audit mode)'
-                  supertip='Include per-fallback samples, data table diagnostics, writeback failures and the fallback detail sheet. Slower on large models, so off by default.' />
+                  onAction='ToggleReport'
+                  getPressed='GetReportPressed'
+                  screentip='Write a summary sheet after each run'
+                  supertip='Writes _LudicrousSpeed_Report: how long the run took, how much of the workbook the engine could vouch for, and anything it could not. Off by default so a plain recalculation costs only the calculation.' />
+          <toggleButton id='DevModeToggle'
+                  label='Dev Mode'
+                  imageMso='CalculateSheet'
+                  onAction='ToggleDevMode'
+                  getPressed='GetDevModePressed'
+                  screentip='Dev Mode (full engine metrics)'
+                  supertip='Adds every engine metric to the report: cache hits, phase timings, per-fallback samples, data table diagnostics and the fallback detail sheet. Implies Report.' />
         </group>
         <group id='LudicrousSpeedDataTableGroup' label='Data Tables'>
+          <button id='NewLiveTableButton'
+                  label='New Live Table'
+                  size='large'
+                  imageMso='TableInsert'
+                  onAction='NewLiveDataTable'
+                  screentip='Build a LudicrousSpeed data table from the selection'
+                  supertip='The Alt+D+T equivalent: select the whole table (formula in the top-left corner, column inputs across the top, row inputs down the left side), then pick the two input cells. Builds an engine-driven table directly, so Excel never re-runs the source formula once per scenario.' />
           <button id='ConvertDataTablesButton'
                   label='Convert to Live'
                   size='large'
@@ -144,11 +170,6 @@ namespace LudicrousSpeed.ExcelAddIn
     </tabs>
   </ribbon>
 </customUI>";
-        }
-
-        public void AnalyzeWorkbook(IRibbonControl control)
-        {
-            Run("analyze", includeExcelBaseline: false);
         }
 
         public void RecalculateWithLudicrousSpeed(IRibbonControl control)
@@ -230,6 +251,90 @@ namespace LudicrousSpeed.ExcelAddIn
             }
         }
 
+        /// <summary>
+        /// The Alt+D+T equivalent. Uses Excel's own InputBox range picker for
+        /// the two input cells rather than a custom dialog, so it behaves like
+        /// the native command it replaces -- you can click a cell to choose it.
+        /// </summary>
+        public void NewLiveDataTable(IRibbonControl control)
+        {
+            try
+            {
+                dynamic excel = ExcelDnaUtil.Application;
+                Excel.Range? selection = excel.Selection as Excel.Range;
+                if (selection == null)
+                {
+                    ShowError("Select the table range first, then run New Live Table.");
+                    return;
+                }
+
+                var rowInput = PromptForCell(
+                    excel,
+                    "Row input cell -- the cell the values along the TOP row feed into:");
+                if (rowInput == null)
+                {
+                    return;
+                }
+
+                var columnInput = PromptForCell(
+                    excel,
+                    "Column input cell -- the cell the values down the LEFT column feed into:");
+                if (columnInput == null)
+                {
+                    return;
+                }
+
+                CreateResult created;
+                using (var calculationGuard = ExcelCalculationGuard.Enter(disableNativeDataTables: true))
+                {
+                    created = dataTableConverter.CreateLiveTable(selection, rowInput, columnInput);
+                }
+
+                if (!created.Created)
+                {
+                    ShowError(created.Message);
+                    return;
+                }
+
+                // The body holds LS.LIVE formulas with nothing behind them yet,
+                // so without this the user is left looking at a grid of #N/A.
+                SetStatusBar(created.Message + " Calculating...");
+                Run("recalculate", includeExcelBaseline: false);
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Excel's own range picker. Returns null when the user cancels --
+        /// InputBox reports that by returning False rather than a Range, which
+        /// is why the result is inspected rather than cast.
+        /// </summary>
+        private static Excel.Range? PromptForCell(dynamic excel, string prompt)
+        {
+            try
+            {
+                object result = excel.InputBox(
+                    prompt,
+                    "LudicrousSpeed",
+                    Type.Missing,
+                    Type.Missing,
+                    Type.Missing,
+                    Type.Missing,
+                    Type.Missing,
+                    8);
+                return result as Excel.Range;
+            }
+            catch
+            {
+                // Excel throws rather than returning False in some cancel
+                // paths; both mean the same thing here.
+                return null;
+            }
+        }
+
         public void RestoreNativeDataTables(IRibbonControl control)
         {
             try
@@ -300,7 +405,7 @@ namespace LudicrousSpeed.ExcelAddIn
                 var ludicrousStopwatch = Stopwatch.StartNew();
                 snapshot = snapshotService.Create(mode, excelBaselineMs);
                 snapshot.DataTableOverrides = dataTableConverter.ReadOverrides();
-                snapshot.IncludeAnalytics = detailedReport;
+                snapshot.IncludeAnalytics = ReportingOn;
                 var response = engineClient.Run(snapshot, out var nativeCallMs);
                 ludicrousStopwatch.Stop();
 
@@ -350,7 +455,7 @@ namespace LudicrousSpeed.ExcelAddIn
                 var ludicrousStopwatch = Stopwatch.StartNew();
                 snapshot = snapshotService.Create(mode, excelBaselineMs);
                 snapshot.DataTableOverrides = dataTableConverter.ReadOverrides();
-                snapshot.IncludeAnalytics = detailedReport;
+                snapshot.IncludeAnalytics = ReportingOn;
                 var snapshotForBackgroundCall = snapshot;
 
                 SetStatusBar("LudicrousSpeed is calculating in the background...");
@@ -529,7 +634,7 @@ namespace LudicrousSpeed.ExcelAddIn
             };
 
             // No-op unless the Detailed Report toggle is on.
-            reportWriter.Write(response, hostMetrics, detailedReport);
+            reportWriter.Write(response, hostMetrics, ReportingOn, devMode);
 
             if (!response.Ok)
             {
@@ -544,6 +649,17 @@ namespace LudicrousSpeed.ExcelAddIn
             // intrusive thing an add-in can do, and it also stops the clock on
             // "how fast did that feel". Failures still raise a dialog -- those
             // are worth interrupting for.
+            // Benchmark exists to produce a comparison, and it charges a full
+            // Excel rebuild to get one. Routing that result through the report
+            // sheet meant the number was measured and then thrown away whenever
+            // reporting was off -- which is the default -- so the command spent
+            // a minute of Excel's time and showed nothing for it. An explicitly
+            // requested measurement gets shown.
+            if (string.Equals(mode, "benchmark", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowBenchmarkComparison(hostMetrics, response);
+            }
+
             var elapsed = hostMetrics.LudicrousEndToEndMs;
             var summary = $"LudicrousSpeed: {elapsed:N0} ms";
             if (livePublished > 0)
@@ -551,12 +667,54 @@ namespace LudicrousSpeed.ExcelAddIn
                 summary += $", {livePublished:N0} live values published";
             }
 
-            if (detailedReport)
+            if (ReportingOn)
             {
                 summary += " - see _LudicrousSpeed_Report";
             }
 
             SetStatusBar(summary);
+        }
+
+        /// <summary>
+        /// The whole point of the Benchmark command, in the four numbers a
+        /// modeller actually compares. The breakdown matters because the
+        /// end-to-end figure includes saving a snapshot of the workbook, which
+        /// on a large model is a real share of it -- quoting a speedup without
+        /// showing that would be flattering the result.
+        /// </summary>
+        private static void ShowBenchmarkComparison(HostRunMetrics metrics, EngineResponse response)
+        {
+            if (!metrics.ExcelBaselineMs.HasValue)
+            {
+                return;
+            }
+
+            var excelMs = metrics.ExcelBaselineMs.Value;
+            var lsMs = metrics.LudicrousEndToEndMs;
+            var speedup = metrics.EndToEndSpeedupVsExcel;
+
+            var text =
+                $"Excel full rebuild:   {excelMs:N0} ms{Environment.NewLine}"
+                + $"LudicrousSpeed:       {lsMs:N0} ms{Environment.NewLine}"
+                + Environment.NewLine
+                + (speedup.HasValue
+                    ? $"Speedup:              {speedup.Value:0.0}x faster{Environment.NewLine}"
+                    : string.Empty)
+                + Environment.NewLine
+                + $"Of the LudicrousSpeed time:{Environment.NewLine}"
+                + $"  engine call         {metrics.NativeCallMs:N0} ms{Environment.NewLine}"
+                + $"  workbook snapshot   {metrics.SnapshotSaveMs:N0} ms"
+                + (metrics.SnapshotSkipped ? " (skipped)" : string.Empty);
+
+            var dataTables = response.Result?.Benchmark.DataTables;
+            if (dataTables != null && dataTables.DataTableCount > 0)
+            {
+                text += Environment.NewLine
+                    + $"  {dataTables.DataTableCount:N0} data tables "
+                    + $"({dataTables.DataTableCells:N0} cells) in {dataTables.DataTableEvalMs:N0} ms";
+            }
+
+            MessageBox.Show(text, "LudicrousSpeed Benchmark", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private static void ShowError(string? message)

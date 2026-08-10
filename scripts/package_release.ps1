@@ -19,6 +19,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $addinOutput = Join-Path $repoRoot "excel-addin\LudicrousSpeed.ExcelAddIn\bin\$Configuration\net48"
+$outlookDll = Join-Path $repoRoot "outlook-addin\LudicrousSpeed.OutlookAddIn\bin\$Configuration\net48\LudicrousSpeed.OutlookAddIn.dll"
 $engineDll = Join-Path $repoRoot "target\$($Configuration.ToLower())\ludicrous_engine.dll"
 
 if (-not (Test-Path $addinOutput)) {
@@ -90,6 +91,20 @@ Copy-Item (Join-Path $PSScriptRoot "Install-LudicrousSpeed.ps1") $staging -Force
 Copy-Item (Join-Path $PSScriptRoot "Install.cmd") $staging -Force
 Copy-Item (Join-Path $PSScriptRoot "Uninstall.cmd") $staging -Force
 
+# The Outlook attachment guard ships in the same zip but installs separately,
+# so someone who only wants the Excel accelerator never has to think about it.
+# A single self-contained DLL: it embeds the Outlook interop types it uses, so
+# unlike the .xll it has no sidecars to keep in step.
+if (Test-Path $outlookDll) {
+    Copy-Item $outlookDll $staging -Force
+    Copy-Item (Join-Path $PSScriptRoot "Install-OutlookGuard.ps1") $staging -Force
+    Copy-Item (Join-Path $PSScriptRoot "InstallOutlookGuard.cmd") $staging -Force
+    Copy-Item (Join-Path $PSScriptRoot "UninstallOutlookGuard.cmd") $staging -Force
+    Write-Host "Included the Outlook attachment guard"
+} else {
+    Write-Warning "Outlook attachment guard not found at $outlookDll -- packaging the Excel add-in without it. Run scripts\build_windows.ps1 -Configuration $Configuration to include it."
+}
+
 @"
 LudicrousSpeed beta ($Version)
 
@@ -104,8 +119,15 @@ Install:
      If it isn't: File > Options > Add-ins > Manage: Excel Add-ins > Go... >
      Browse... and select LudicrousSpeed.xll from the path Install.cmd printed.
 
+Optional -- Outlook attachment guard:
+  Close Outlook, then double-click InstallOutlookGuard.cmd.
+  It warns you when you attach a workbook that still has LudicrousSpeed live
+  cells in it, so you can run Restore Native before it reaches anyone who
+  would just see #NAME?. Installs and uninstalls independently of the Excel
+  add-in above.
+
 Uninstall:
-  Double-click Uninstall.cmd
+  Double-click Uninstall.cmd (and UninstallOutlookGuard.cmd if you installed it)
 "@ | Set-Content (Join-Path $staging "README.txt")
 
 $zipPath = Join-Path $dist "$stagingName.zip"

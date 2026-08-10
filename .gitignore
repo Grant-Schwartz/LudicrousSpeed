@@ -5,6 +5,8 @@ node_modules
 /obj/
 excel-addin/**/bin/
 excel-addin/**/obj/
+outlook-addin/**/bin/
+outlook-addin/**/obj/
 *.xll
 *.xll.config
 *.dna

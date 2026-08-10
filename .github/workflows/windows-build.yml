@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Windows Excel add-in
+    name: Build Windows Excel add-in and Outlook guard
     runs-on: windows-latest
 
     steps:
@@ -86,12 +86,55 @@ jobs:
             Pop-Location
           }
 
+      - name: Smoke test Outlook guard installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Push-Location "dist/ludicrous-windows-${{ steps.vars.outputs.short_sha }}"
+          try {
+            $installer = [scriptblock]::Create((Get-Content -Raw -LiteralPath "./Install-OutlookGuard.ps1"))
+            & $installer -BundleDir (Get-Location).Path
+
+            # This installer hand-writes the COM registration that regasm would
+            # normally produce, so checking the exit code proves nothing -- a
+            # wrong or missing value here means Outlook silently never loads the
+            # add-in, with no error anywhere for the user to find.
+            $clsid = "{996BCB68-6439-44E2-84F0-9DF0FC563205}"
+            $inproc = "HKCU:\Software\Classes\CLSID\$clsid\InprocServer32"
+            if (-not (Test-Path $inproc)) { throw "COM registration missing at $inproc." }
+
+            $server = Get-ItemProperty -Path $inproc
+            if ($server."(default)" -notlike "*mscoree.dll") {
+              throw "InprocServer32 default should be the CLR shim, found '$($server."(default)")'."
+            }
+            if ($server.Class -ne "LudicrousSpeed.OutlookAddIn.LudicrousSpeedOutlookAddIn") {
+              throw "InprocServer32 Class is '$($server.Class)'."
+            }
+            $codeBase = ([Uri]$server.CodeBase).LocalPath
+            if (-not (Test-Path $codeBase)) { throw "CodeBase points at a missing file: $codeBase." }
+
+            $addinKey = "HKCU:\Software\Microsoft\Office\Outlook\Addins\LudicrousSpeed.OutlookAddIn"
+            if ((Get-ItemProperty -Path $addinKey).LoadBehavior -ne 3) {
+              throw "LoadBehavior must be 3 for Outlook to connect the add-in at startup."
+            }
+
+            & $installer -BundleDir (Get-Location).Path -Uninstall
+            foreach ($leftover in $inproc, $addinKey,
+                     "HKCU:\Software\Classes\LudicrousSpeed.OutlookAddIn",
+                     (Join-Path $env:LOCALAPPDATA "LudicrousSpeedOutlook")) {
+              if (Test-Path $leftover) { throw "Uninstall left $leftover behind." }
+            }
+          } finally {
+            Pop-Location
+          }
+
       - name: Upload Windows add-in artifact
         uses: actions/upload-artifact@v4
         with:
           name: ludicrous-windows-release
           path: |
             excel-addin/LudicrousSpeed.ExcelAddIn/bin/Release/net48/**
+            outlook-addin/LudicrousSpeed.OutlookAddIn/bin/Release/net48/LudicrousSpeed.OutlookAddIn.dll
             target/release/ludicrous-cli.exe
             target/release/ludicrous_engine.dll
           if-no-files-found: error

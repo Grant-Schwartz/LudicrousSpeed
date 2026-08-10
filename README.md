@@ -16,6 +16,8 @@ See [INSTALL.md](INSTALL.md) -- no build tools required.
 - `crates/ludicrous-engine` - Rust engine and C ABI used by the Excel add-in.
 - `excel-addin/LudicrousSpeed.ExcelAddIn` - Excel-DNA host, ribbon commands, workbook
   snapshot/export, native engine calls, and user reports.
+- `outlook-addin/LudicrousSpeed.OutlookAddIn` - Outlook COM add-in that warns before a
+  converted workbook is mailed out.
 - `scripts` - Windows build/package scripts and the beta installer.
 - `fixtures` - Synthetic workbook scenarios and fixture notes.
 - `docs` - Architecture and validation notes.
@@ -74,6 +76,34 @@ item in the acceptance test in `docs/windows-testing.md`. Shift+F9, Ctrl+Alt+F9
 and Ctrl+Alt+Shift+F9 stay native on purpose, so Excel's own answer is always one
 keystroke away.
 
+## Sending a converted workbook
+
+`Convert to Live` makes a workbook depend on the add-in. The `LS.LIVE` cells
+resolve to values while LudicrousSpeed is loaded and to `#NAME?` everywhere
+else, so a converted model mailed to a boss or a client arrives with its
+sensitivity tables broken. Nothing about the file looks different on the sender's
+own screen, which is exactly why it happens.
+
+`outlook-addin/LudicrousSpeed.OutlookAddIn` is a small Outlook COM add-in that
+closes that gap. It reads each attached workbook as what it is -- a zip of XML --
+and counts `LS.LIVE` formulas in the worksheet parts, so it works on a saved file
+whether or not Excel is running and whether or not the conversion happened this
+session. Finding any, it speaks up twice:
+
+- when the file is attached, naming the workbook, the cell count and the sheets;
+- at Send, where it can hold the message back.
+
+`Restore Native` is the fix, and the warning says so. Install it separately with
+`InstallOutlookGuard.cmd` -- see [INSTALL.md](INSTALL.md).
+
+It fails open by design. An attachment it cannot read -- a OneDrive link rather
+than a file, a workbook past its scan budget, an Outlook call that throws --
+is logged to `%LOCALAPPDATA%\LudicrousSpeed\outlook-guard.log` and never blocks
+a send. A guard that occasionally misses a workbook stays installed; one that
+occasionally refuses to send mail does not. Classic Windows desktop Outlook
+only: the new Outlook for Windows, Outlook on the web, and Outlook for Mac do
+not load COM add-ins.
+
 ## Upgrading from WS.LIVE
 
 `LS.LIVE` is the only live-cell function; the earlier `WS.LIVE` name is gone.
@@ -124,5 +154,16 @@ dotnet build excel-addin/LudicrousSpeed.ExcelAddIn/LudicrousSpeed.ExcelAddIn.csp
 
 Copy the built `ludicrous_engine` native library beside the packed Excel-DNA
 add-in before loading it into Excel.
+
+## Outlook add-in
+
+```sh
+dotnet build outlook-addin/LudicrousSpeed.OutlookAddIn/LudicrousSpeed.OutlookAddIn.csproj
+```
+
+Self-contained: it embeds the Outlook interop types it uses, because Outlook
+resolves an add-in's dependencies from its own folder rather than the add-in's,
+so a sidecar assembly would not be found. It talks to neither the Rust engine
+nor the Excel add-in.
 
 For a full Windows build-and-test flow, see `docs/windows-testing.md`.

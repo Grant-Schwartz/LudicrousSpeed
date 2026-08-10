@@ -82,6 +82,36 @@ workbook or running full workbook calculation per scenario. Mismatches or
 unsupported layouts stay visible in the benchmark report and are never silently
 treated as correct.
 
+## Outlook attachment guard
+
+A third component, `outlook-addin/LudicrousSpeed.OutlookAddIn`, shares no code
+with the other two and depends on neither. It exists because `Convert to Live`
+creates a workbook that only works where the Excel add-in is loaded, and
+nothing otherwise connects that fact to the moment the file gets mailed out.
+
+It is a plain COM add-in (`IDTExtensibility2`), not VSTO, and it registers
+per-user under `HKCU` so installing needs no admin rights and no `regasm` --
+the same constraint the Excel installer works under. The interface declaration
+is restated in `Interop/IDTExtensibility2.cs` instead of referenced, and the
+Outlook interop types are embedded, so the whole add-in is one file with
+nothing to resolve at load time. That last part is not a preference: Outlook
+probes for an add-in's dependencies in its own directory, not the add-in's, so
+a sidecar assembly would simply not be found.
+
+Detection reads the attachment as a file rather than asking Excel about it. An
+`.xlsx` is a zip of XML, `LS.LIVE` formulas sit inline in the worksheet parts,
+and reading them there works whether or not Excel is running and whether or not
+the conversion happened in the current session. Only worksheet parts are
+scanned, never `xl/sharedStrings.xml`, so a cell whose *text* reads `LS.LIVE`
+cannot be mistaken for a converted cell. `.xlsb` is covered by searching the
+same names as UTF-16LE, which is how a tokenized binary sheet stores an add-in
+function's name.
+
+It warns at attach time and gates at send time, and it fails open at both: the
+Send handler leaves `Cancel` untouched on any exception, and unreadable
+attachments are logged rather than escalated. Missing a workbook occasionally
+is recoverable; refusing to send someone's mail is not.
+
 ## Correctness policy
 
 Excel remains authoritative. IronCalc results are trusted only for supported

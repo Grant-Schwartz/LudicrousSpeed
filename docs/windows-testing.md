@@ -207,6 +207,64 @@ observation, and if it is wrong this feature breaks a core daily workflow.
 8. Rename `ludicrous_engine.dll` to force a failure, press F9, and confirm it
    falls through to a native calculation rather than becoming a dead key.
 
+## Outlook Attachment Guard Acceptance Test (Unverified Feature)
+
+`outlook-addin\LudicrousSpeed.OutlookAddIn` warns before a workbook that still
+holds `LS.LIVE` cells is mailed out. It was written without access to Windows
+or Outlook. The detection half was verified — the zip/OpenXML reasoning and the
+chunked byte search were ported and checked against
+`outputs\lbo-fixtures\WarpSpeed_Complex_LBO_Test_Model.xlsx` and a doctored copy
+of it — but nothing has been compiled, registered, or loaded into Outlook.
+
+Install it with `scripts\InstallOutlookGuard.cmd` from a packaged bundle, with
+Outlook closed.
+
+1. `dotnet build outlook-addin\LudicrousSpeed.OutlookAddIn\LudicrousSpeed.OutlookAddIn.csproj`
+   succeeds. Confirm specifically that `EmbedInteropTypes` on the
+   `Microsoft.Office.Interop.Outlook` package reference is honoured — the
+   output folder should contain `LudicrousSpeed.OutlookAddIn.dll` and no
+   `Microsoft.Office.Interop.Outlook.dll`. If the interop assembly is emitted
+   alongside, embedding did not happen and the add-in will fail to load inside
+   Outlook, whose assembly probing path is its own folder, not ours.
+2. Start Outlook. `File > Options > Add-ins` lists `LudicrousSpeed Attachment
+   Guard` under Active Application Add-ins. If it is under Inactive or
+   Disabled, Outlook rejected the COM registration or the add-in threw during
+   `OnConnection` — check `%LOCALAPPDATA%\LudicrousSpeed\outlook-guard.log`,
+   which should hold a `guard started` line.
+3. In Excel, convert a data table in
+   `outputs\lbo-fixtures\WarpSpeed_Complex_LBO_Test_Model.xlsx` with `Convert to
+   Live` and save a copy.
+4. Compose a new mail in its own window and attach that copy. Within about a
+   second a warning should name the file, the live cell count, and the sheets
+   (`Sensitivity Tables`). **This is the step most likely to fail**: the check
+   is deferred by 500 ms specifically because `Attachment.SaveAsFile` can throw
+   while Outlook is still writing the attachment. If the log says the
+   attachment could not be inspected, the delay is too short.
+5. Attach a second workbook. The warning should name only the new file.
+6. Press Send. A second dialog should appear with Yes/No, defaulted to No.
+   Choosing No must leave the message open, unsent, with both attachments
+   still on it.
+7. Press Send again and choose Yes. The message must go.
+8. Repeat 4-7 as an inline reply in the reading pane rather than a separate
+   window — this exercises `Explorer.InlineResponse`, a different code path
+   from `Inspectors.NewInspector`.
+9. Pop that inline reply out into its own window and attach a live workbook.
+   Exactly one warning should appear, not two — this is what the COM identity
+   check in `WatchCompose` exists for.
+10. Run `Restore Native` on the workbook, save, attach it again. No warning at
+    attach and none at Send: restoring is the whole point, and a guard that
+    still complains afterwards trains people to click through it.
+11. Attach an ordinary untouched workbook, a `.pdf`, and a large `.xlsb`.
+    None should warn, and Send should not visibly pause.
+12. Forward a message that already carries a live workbook without opening the
+    attachment. No attach-time warning is expected here; the Send gate must
+    still fire.
+13. Set `LUDICROUS_OUTLOOK_GUARD=0`, restart Outlook, and confirm the add-in
+    loads and does nothing.
+14. Check `%TEMP%\LudicrousSpeedGuard` is empty after all of the above. Every
+    attachment is written there to be read as a zip and deleted immediately;
+    copies of other people's models must not accumulate in it.
+
 ## Notes
 
 - `ludicrous_engine.dll` must sit beside the Excel add-in output because

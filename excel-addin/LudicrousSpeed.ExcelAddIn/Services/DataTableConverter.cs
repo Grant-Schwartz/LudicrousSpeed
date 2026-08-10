@@ -148,6 +148,126 @@ namespace LudicrousSpeed.ExcelAddIn.Services
         }
 
         /// <summary>
+        /// Builds an LS-native data table from a selection, the way Excel's own
+        /// Data Table dialog (Alt+D+T) builds a native one -- except no native
+        /// table is created at any point, so Excel never pays to re-evaluate the
+        /// source formula's dependency cone once per scenario cell.
+        ///
+        /// The selection is the whole rectangle, exactly as Excel wants it: the
+        /// source formula in the top-left corner, the column scenarios along the
+        /// top row, the row scenarios down the left column. The body is
+        /// therefore the selection minus its first row and first column, which
+        /// is both the range the engine computes and the range that receives
+        /// LS.LIVE formulas.
+        ///
+        /// The values do not appear until the engine has run -- the caller is
+        /// expected to kick off a recalculation immediately afterwards.
+        /// </summary>
+        public CreateResult CreateLiveTable(
+            Excel.Range selection,
+            Excel.Range excelRowInput,
+            Excel.Range excelColumnInput)
+        {
+            var result = new CreateResult();
+
+            if (selection.Rows.Count < 2 || selection.Columns.Count < 2)
+            {
+                result.Message =
+                    "Select the whole table first: the formula in the top-left corner, the column "
+                    + "inputs along the top row, and the row inputs down the left column. That is the "
+                    + "same selection Excel's own Data Table dialog expects.";
+                return result;
+            }
+
+            dynamic excelApp = ExcelDnaUtil.Application;
+            Excel.Workbook workbook = excelApp.ActiveWorkbook;
+            Excel.Worksheet sheet = (Excel.Worksheet)selection.Worksheet;
+            var sheetName = Convert.ToString(sheet.Name, CultureInfo.InvariantCulture) ?? "";
+
+            var firstRow = selection.Row;
+            var firstColumn = selection.Column;
+            var lastRow = firstRow + selection.Rows.Count - 1;
+            var lastColumn = firstColumn + selection.Columns.Count - 1;
+
+            // Without a formula in the corner there is nothing to vary, and the
+            // engine would compute an empty grid. Excel rejects this case too,
+            // just with a less specific message.
+            var cornerFormula = Convert.ToString(
+                ((Excel.Range)sheet.Cells[firstRow, firstColumn]).Formula,
+                CultureInfo.InvariantCulture) ?? "";
+            if (!cornerFormula.StartsWith("=", StringComparison.Ordinal))
+            {
+                result.Message =
+                    $"{ColumnLetters(firstColumn)}{firstRow} needs to hold the formula the table varies. "
+                    + (string.IsNullOrWhiteSpace(cornerFormula)
+                        ? "It is currently empty."
+                        : $"It currently contains '{cornerFormula}'.");
+                return result;
+            }
+
+            var bodyAnchor = $"${ColumnLetters(firstColumn + 1)}${firstRow + 1}";
+            var bodyAddress = $"{bodyAnchor}:${ColumnLetters(lastColumn)}${lastRow}";
+
+            Excel.Worksheet metadata = EnsureMetadataSheet(workbook);
+
+            // Writing LS.LIVE formulas is an edit like any other as far as the
+            // tracker is concerned; without this the next run would treat the
+            // whole body as user-changed input.
+            using (var trackingSuspension = changeTracker.SuspendTracking())
+            {
+                var row = NextMetadataRow(metadata);
+                ((Excel.Range)metadata.Cells[row, 1]).Value2 = $"live-{sheetName}!{bodyAddress}";
+                ((Excel.Range)metadata.Cells[row, 2]).Value2 = sheetName;
+                ((Excel.Range)metadata.Cells[row, 3]).Value2 = bodyAddress;
+                // Excel's dialog labels and the stored fields are transposed:
+                // what Excel calls the Row input cell is r1 in the OOXML, which
+                // this sheet carries as column_input_cell, and vice versa. The
+                // swap happens here, once, rather than in every reader -- the
+                // same transposition that previously destroyed tables on
+                // restore by passing the two the wrong way round.
+                ((Excel.Range)metadata.Cells[row, 4]).Value2 = QualifiedAddress(excelRowInput);
+                ((Excel.Range)metadata.Cells[row, 5]).Value2 = QualifiedAddress(excelColumnInput);
+                ((Excel.Range)metadata.Cells[row, 6]).Value2 =
+                    DateTime.Now.ToString("u", CultureInfo.InvariantCulture);
+                ((Excel.Range)metadata.Cells[row, 7]).Value2 = 1d;
+                ((Excel.Range)metadata.Cells[row, 8]).Value2 = bodyAnchor;
+                ((Excel.Range)metadata.Cells[row, 9]).Value2 = 0d;
+                // restored_at stays empty: a non-empty value there means "stop
+                // replaying this as an override", which would leave the table
+                // with no engine values at all.
+                ((Excel.Range)metadata.Cells[row, 10]).Value2 = "";
+                // Separate column, because this means something different --
+                // there was never a native table here, so Restore Native has
+                // nothing to rebuild and must skip it rather than fabricate one.
+                ((Excel.Range)metadata.Cells[row, 11]).Value2 = "1";
+
+                for (var r = firstRow + 1; r <= lastRow; r++)
+                {
+                    for (var c = firstColumn + 1; c <= lastColumn; c++)
+                    {
+                        var address = ColumnLetters(c) + r.ToString(CultureInfo.InvariantCulture);
+                        ((Excel.Range)sheet.Cells[r, c]).Formula =
+                            $"={LiveFunction}(\"{EscapeForFormula(sheetName)}!{address}\")";
+                    }
+                }
+            }
+
+            result.Created = true;
+            result.Rows = lastRow - firstRow;
+            result.Columns = lastColumn - firstColumn;
+            result.Message =
+                $"Created a live {result.Rows} x {result.Columns} data table at {sheetName}!{bodyAddress}.";
+            return result;
+        }
+
+        private static string QualifiedAddress(Excel.Range cell)
+        {
+            var sheet = (Excel.Worksheet)cell.Worksheet;
+            var name = Convert.ToString(sheet.Name, CultureInfo.InvariantCulture) ?? "";
+            return $"{name}!${ColumnLetters(cell.Column)}${cell.Row}";
+        }
+
+        /// <summary>
         /// Reads back every table this workbook has had converted, so the
         /// definitions can ride along on each snapshot. Without this the
         /// engine finds no table where a converted one used to be, computes
@@ -257,6 +377,16 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                         continue;
                     }
 
+                    // Built live by New Live Table -- there was never a native
+                    // table here, so there is nothing to restore it to. Leave
+                    // it alone rather than fabricating one the user never had.
+                    if (!string.IsNullOrWhiteSpace(CellText(metadata, row, 11)))
+                    {
+                        result.SkippedCreatedLive++;
+                        row++;
+                        continue;
+                    }
+
                     try
                     {
                         RestoreOne(workbook, metadata, row);
@@ -276,6 +406,12 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                 }
 
                 result.Message = $"Restored {result.Restored} native data table(s). Failed {result.Failed}.";
+                if (result.SkippedCreatedLive > 0)
+                {
+                    result.Message +=
+                        $" Left {result.SkippedCreatedLive} live-built table(s) alone -- those never had a"
+                        + " native table to restore.";
+                }
             }
             finally
             {
@@ -410,6 +546,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             ((Excel.Range)sheet.Cells[1, 8]).Value2 = "anchor_address";
             ((Excel.Range)sheet.Cells[1, 9]).Value2 = "dtr";
             ((Excel.Range)sheet.Cells[1, 10]).Value2 = "restored_at";
+            ((Excel.Range)sheet.Cells[1, 11]).Value2 = "created_live";
             sheet.Visible = Excel.XlSheetVisibility.xlSheetHidden;
             return sheet;
         }
@@ -497,10 +634,19 @@ namespace LudicrousSpeed.ExcelAddIn.Services
         public string Message { get; set; } = "";
     }
 
+    internal sealed class CreateResult
+    {
+        public bool Created { get; set; }
+        public int Rows { get; set; }
+        public int Columns { get; set; }
+        public string Message { get; set; } = "";
+    }
+
     internal sealed class RestoreResult
     {
         public int Restored { get; set; }
         public int Failed { get; set; }
+        public int SkippedCreatedLive { get; set; }
         public List<string> Errors { get; } = new List<string>();
         public string Message { get; set; } = "";
     }

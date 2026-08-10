@@ -25,6 +25,8 @@ function Invoke-Native {
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $addinProject = Join-Path $repoRoot "excel-addin\LudicrousSpeed.ExcelAddIn\LudicrousSpeed.ExcelAddIn.csproj"
 $addinOutput = Join-Path $repoRoot "excel-addin\LudicrousSpeed.ExcelAddIn\bin\$Configuration\net48"
+$outlookProject = Join-Path $repoRoot "outlook-addin\LudicrousSpeed.OutlookAddIn\LudicrousSpeed.OutlookAddIn.csproj"
+$outlookOutput = Join-Path $repoRoot "outlook-addin\LudicrousSpeed.OutlookAddIn\bin\$Configuration\net48"
 
 if ($Configuration -eq "Release") {
     $cargoBuildArgs = @("build", "-p", "ludicrous-engine", "--release")
@@ -66,6 +68,18 @@ Write-Host ""
 Write-Host "Copying native engine DLL beside add-in output..."
 Copy-Item $engineDll $addinOutput -Force
 
+# The Outlook attachment guard shares nothing with the engine -- it reads saved
+# workbook files, not live ones -- so it builds independently and its failure
+# says nothing about the Excel add-in.
+Write-Host ""
+Write-Host "Building Outlook attachment guard..."
+Invoke-Native "dotnet" "build" $outlookProject "-c" $Configuration
+
+$outlookDll = Join-Path $outlookOutput "LudicrousSpeed.OutlookAddIn.dll"
+if (-not (Test-Path $outlookDll)) {
+    throw "Expected Outlook add-in DLL was not produced: $outlookDll"
+}
+
 $xlls = Get-ChildItem $addinOutput -Filter "*.xll" -ErrorAction SilentlyContinue
 $dna = Get-ChildItem $addinOutput -Filter "*.dna" -ErrorAction SilentlyContinue
 
@@ -76,6 +90,9 @@ Write-Host "  $engineDll"
 Write-Host ""
 Write-Host "Add-in output:"
 Write-Host "  $addinOutput"
+Write-Host ""
+Write-Host "Outlook attachment guard:"
+Write-Host "  $outlookDll"
 
 if ($xlls.Count -gt 0) {
     Write-Host ""
