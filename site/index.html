@@ -18,6 +18,7 @@
     --text-dimmer: rgba(245, 245, 245, 0.4);
     --accent: #21a366;
     --line: rgba(245, 245, 245, 0.14);
+    --page-max: 92rem;
   }
 
   * { box-sizing: border-box; }
@@ -38,7 +39,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    max-width: 72rem;
+    max-width: var(--page-max);
     margin: 0 auto;
     padding: 1.5rem;
     border-bottom: 1px solid var(--line);
@@ -57,17 +58,54 @@
   .topnav a:hover { color: var(--text); }
 
   .hero {
-    padding: 4.5rem 1.5rem;
+    position: relative;
+    min-height: 90vh;
     border-bottom: 1px solid var(--line);
+    overflow: hidden;
+  }
+
+  .hero-stage {
+    position: absolute;
+    inset: 0;
+    width: var(--page-max);
+    max-width: 100%;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+  }
+
+  .hero-canvas {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .hero-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(10, 10, 10, 0.88) 0%, rgba(10, 10, 10, 0.74) 45%, rgba(10, 10, 10, 0.55) 100%);
+  }
+
+  @media (min-width: 800px) {
+    .hero-scrim {
+      background: linear-gradient(90deg, rgba(10, 10, 10, 0.92) 0%, rgba(10, 10, 10, 0.7) 38%, rgba(10, 10, 10, 0.18) 72%, rgba(10, 10, 10, 0) 100%);
+    }
   }
 
   .hero-grid {
-    max-width: 72rem;
-    margin: 0 auto;
-    display: grid;
-    grid-template-columns: 1.15fr 0.85fr;
-    gap: 3.5rem;
-    align-items: center;
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    padding: 4.5rem 1.5rem;
+  }
+
+  .hero-text {
+    max-width: 40rem;
   }
 
   .eyebrow {
@@ -127,15 +165,6 @@
   }
   .link-arrow:hover { color: var(--text); }
 
-  .hero-figure {
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    overflow: hidden;
-    aspect-ratio: 4 / 3;
-    background: var(--bg);
-  }
-  .hero-figure canvas { display: block; width: 100%; height: 100%; }
-
   section h2 {
     margin: 0 0 0.75rem;
     font-size: clamp(1.4rem, 2.5vw, 1.75rem);
@@ -143,7 +172,7 @@
   }
 
   .how, .trust {
-    max-width: 72rem;
+    max-width: var(--page-max);
     margin: 0 auto;
     padding: 4rem 1.5rem;
     border-bottom: 1px solid var(--line);
@@ -249,7 +278,7 @@
   }
 
   footer {
-    max-width: 72rem;
+    max-width: var(--page-max);
     margin: 0 auto;
     padding: 2.5rem 1.5rem 3.5rem;
   }
@@ -265,10 +294,6 @@
     color: var(--text-dim);
     text-decoration: underline;
     text-underline-offset: 2px;
-  }
-
-  @media (max-width: 800px) {
-    .hero-grid { grid-template-columns: 1fr; }
   }
 
   @media (max-width: 640px) {
@@ -289,19 +314,19 @@
   </header>
 
   <section class="hero" id="top">
-    <div class="hero-grid">
-      <div class="hero-text">
-        <p class="eyebrow">For LBOs, DCFs &amp; sensitivity-heavy models</p>
-        <h1>Recalculates the models that make Excel choke.</h1>
-        <p class="tagline">LudicrousSpeed snapshots your workbook, recalculates it in Rust, and streams the result back into Excel. It never touches a formula.</p>
-        <div class="cta-row">
-          <a class="btn" href="https://github.com/Grant-Schwartz/WarpSpeed/blob/main/INSTALL.md">Download for Excel</a>
-          <a class="link-arrow" href="#how">How it works</a>
+    <div class="hero-stage">
+      <canvas id="warp" class="hero-canvas" aria-hidden="true"></canvas>
+      <div class="hero-scrim"></div>
+      <div class="hero-grid">
+        <div class="hero-text">
+          <p class="eyebrow">For LBOs, DCFs &amp; sensitivity-heavy models</p>
+          <h1>Recalculates the models that make Excel choke.</h1>
+          <p class="tagline">LudicrousSpeed snapshots your workbook, recalculates it in Rust, and streams the result back into Excel. It never touches a formula.</p>
+          <div class="cta-row">
+            <a class="btn" href="https://github.com/Grant-Schwartz/WarpSpeed/blob/main/INSTALL.md">Download for Excel</a>
+            <a class="link-arrow" href="#how">How it works</a>
+          </div>
         </div>
-      </div>
-
-      <div class="hero-figure">
-        <canvas id="warp" aria-hidden="true"></canvas>
       </div>
     </div>
   </section>
@@ -381,16 +406,16 @@
   var TRACE_RGB = '77, 163, 255';
   var BG = '#0a0a0a';
   var LABELS = ['A1', 'C14', 'IRR', '=SUM', '$142', 'NPV', 'D22', 'MOIC'];
-  var GRID_STEP = 30;
+  var GRID_STEP = 34;
   var CELL_W = 27;
   var CELL_H = 9;
-  var LANES = 16;
-  var RAYS_PER_LANE = 3;
+  var LANES = 20;
+  var RAYS_PER_LANE = 4;
 
   var W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
   var cells = [];
   var rays = [];
-  var N = 22;
+  var N = 56;
   var raf = null;
   var visible = true;
   var last = null;
@@ -410,13 +435,17 @@
     return Math.hypot(W, H) / 2 + 40;
   }
 
+  function focalX() {
+    return W > 800 ? W * 0.66 : W * 0.5;
+  }
+
   function spawn(laneIndex) {
     var r = Math.random();
     var lane = laneIndex != null ? laneIndex : (Math.random() * LANES) | 0;
     return {
       angle: (lane / LANES) * Math.PI * 2 + rand(-0.045, 0.045),
-      dist: rand(0, maxDist()),
-      speed: rand(72, 86),
+      dist: rand(0.24, 0.36) * maxDist(),
+      speed: rand(95, 118),
       age: 0,
       w: CELL_W,
       h: CELL_H,
@@ -483,11 +512,11 @@
 
   function drawFrame(cx, cy) {
     var base = Math.min(W, H);
-    var sizes = [0.34, 0.56];
+    var sizes = [0.22, 0.36, 0.52, 0.7];
     for (var i = 0; i < sizes.length; i++) {
-      var w = sizes[i] * base, h = w * 0.72;
-      ctx.strokeStyle = 'rgba(245, 245, 245, ' + (0.14 - i * 0.045) + ')';
-      ctx.lineWidth = 1;
+      var w = sizes[i] * base, h = w * 0.74;
+      ctx.strokeStyle = 'rgba(245, 245, 245, ' + (0.38 - i * 0.075) + ')';
+      ctx.lineWidth = 1.5 - i * 0.2;
       ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
     }
   }
@@ -587,7 +616,7 @@
   }
 
   function step(dt) {
-    var cx = W / 2, cy = H / 2, md = maxDist();
+    var cx = focalX(), cy = H / 2, md = maxDist();
 
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, W, H);
@@ -606,7 +635,7 @@
   }
 
   function drawStatic() {
-    var cx = W / 2, cy = H / 2;
+    var cx = focalX(), cy = H / 2;
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, W, H);
     drawGrid();
@@ -635,9 +664,13 @@
     resize();
     buildRays();
     cells = [];
-    for (var i = 0; i < N; i++) cells.push(spawn());
+    for (var i = 0; i < N; i++) {
+      var c = spawn();
+      c.dist = rand(0, maxDist());
+      c.age = 1;
+      cells.push(c);
+    }
     if (reduceMotion) {
-      for (var j = 0; j < cells.length; j++) cells[j].age = 1;
       drawStatic();
     } else {
       start();
