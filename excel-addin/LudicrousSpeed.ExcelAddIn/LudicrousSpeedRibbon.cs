@@ -409,7 +409,14 @@ namespace LudicrousSpeed.ExcelAddIn
                 var response = engineClient.Run(snapshot, out var nativeCallMs);
                 ludicrousStopwatch.Stop();
 
-                FinishRun(mode, snapshot, response, excelBaselineMs, ludicrousStopwatch.ElapsedMilliseconds, nativeCallMs);
+                FinishRun(
+                    mode,
+                    snapshot,
+                    response,
+                    excelBaselineMs,
+                    ludicrousStopwatch.ElapsedMilliseconds,
+                    ludicrousStopwatch.Elapsed.TotalMilliseconds,
+                    nativeCallMs);
             }
             catch (Exception ex)
             {
@@ -499,6 +506,7 @@ namespace LudicrousSpeed.ExcelAddIn
                                 response!,
                                 excelBaselineMs,
                                 ludicrousStopwatch.ElapsedMilliseconds,
+                                ludicrousStopwatch.Elapsed.TotalMilliseconds,
                                 nativeCallMs);
                         }
                         catch (Exception ex)
@@ -594,6 +602,7 @@ namespace LudicrousSpeed.ExcelAddIn
             EngineResponse response,
             long? excelBaselineMs,
             long warpSpeedEndToEndMs,
+            double warpSpeedEndToEndMsPrecise,
             long nativeCallMs)
         {
             // Push engine results to any LS.LIVE cells, then let Excel
@@ -630,6 +639,7 @@ namespace LudicrousSpeed.ExcelAddIn
                 SnapshotSkipped = snapshot.SnapshotSkipped,
                 NativeCallMs = nativeCallMs,
                 LudicrousEndToEndMs = warpSpeedEndToEndMs,
+                LudicrousEndToEndMsPrecise = warpSpeedEndToEndMsPrecise,
                 LiveValuesPublished = livePublished,
             };
 

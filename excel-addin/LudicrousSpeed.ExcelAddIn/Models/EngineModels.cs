@@ -142,6 +142,15 @@ namespace LudicrousSpeed.ExcelAddIn.Models
 
         public long LudicrousEndToEndMs { get; set; }
 
+        /// <summary>
+        /// The same measurement without the truncation. A warm run that skips
+        /// the snapshot can finish inside a millisecond, which
+        /// <see cref="LudicrousEndToEndMs"/> rounds to 0 -- and a zero
+        /// denominator suppressed the speedup entirely, so the benchmark went
+        /// blank exactly when the result was at its best.
+        /// </summary>
+        public double LudicrousEndToEndMsPrecise { get; set; }
+
         public bool SnapshotSkipped { get; set; }
 
         public long WritebackMs { get; set; }
@@ -165,12 +174,20 @@ namespace LudicrousSpeed.ExcelAddIn.Models
         {
             get
             {
-                if (!ExcelBaselineMs.HasValue || LudicrousEndToEndMs == 0)
+                if (!ExcelBaselineMs.HasValue)
                 {
                     return null;
                 }
 
-                return ExcelBaselineMs.Value / (double)LudicrousEndToEndMs;
+                // Prefer the untruncated figure, falling back to the whole-ms
+                // one for any path that has not been updated to record it.
+                var elapsed = LudicrousEndToEndMsPrecise > 0
+                    ? LudicrousEndToEndMsPrecise
+                    : LudicrousEndToEndMs;
+
+                // Still guard, but against a genuinely unmeasurable run rather
+                // than against sub-millisecond ones, which are the good case.
+                return elapsed > 0 ? ExcelBaselineMs.Value / elapsed : null;
             }
         }
     }
