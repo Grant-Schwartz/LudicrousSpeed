@@ -125,6 +125,11 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             // if the write below fails partway.
             RecordRestoreInfo(metadata, region);
             RememberBody(workbook, region.TableId, body);
+            // The inputs drift too, and drifted inputs are worse than a drifted
+            // body: the grid still looks plausible, it is just computed from
+            // the wrong assumptions.
+            RememberCell(workbook, region.TableId + "|ci", region.ColumnInputCell);
+            RememberCell(workbook, region.TableId + "|ri", region.RowInputCell);
 
             // Clearing the range removes the {=TABLE()} array formula. Excel
             // refuses to modify part of an array, so the whole body goes at
@@ -242,7 +247,10 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                 // nothing to rebuild and must skip it rather than fabricate one.
                 ((Excel.Range)metadata.Cells[row, 11]).Value2 = "1";
 
-                RememberBody(workbook, $"live-{sheetName}!{bodyAddress}", sheet.Range[bodyAddress]);
+                var liveTableId = $"live-{sheetName}!{bodyAddress}";
+                RememberBody(workbook, liveTableId, sheet.Range[bodyAddress]);
+                RememberCell(workbook, liveTableId + "|ci", QualifiedAddress(excelRowInput));
+                RememberCell(workbook, liveTableId + "|ri", QualifiedAddress(excelColumnInput));
 
                 for (var r = firstRow + 1; r <= lastRow; r++)
                 {
@@ -296,6 +304,44 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                 // Falls back to the stored text, which is what happened before
                 // this existed. Not worth failing a conversion over.
             }
+        }
+
+        private static void RememberCell(
+            Excel.Workbook workbook,
+            string key,
+            string? qualifiedAddress)
+        {
+            if (string.IsNullOrWhiteSpace(qualifiedAddress))
+            {
+                return;
+            }
+
+            Excel.Range? cell = ResolveCell(workbook, qualifiedAddress!);
+            if (cell != null)
+            {
+                RememberBody(workbook, key, cell);
+            }
+        }
+
+        private static string? RememberedCellAddress(Excel.Workbook workbook, string key)
+        {
+            try
+            {
+                var target = RangeNameFor(key);
+                foreach (Excel.Name candidate in workbook.Names)
+                {
+                    if (string.Equals(candidate.Name, target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return QualifiedAddress(candidate.RefersToRange);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Name pointing at deleted cells; fall back to the text.
+            }
+
+            return null;
         }
 
         private static string? RememberedBodyAddress(Excel.Workbook workbook, string tableId)
@@ -369,13 +415,21 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                         && !string.IsNullOrWhiteSpace(sheetName)
                         && !string.IsNullOrWhiteSpace(rangeAddress))
                     {
-                        var columnInput = CellText(metadata, row, 4);
-                        var rowInput = CellText(metadata, row, 5);
+                        var columnInput = RememberedCellAddress(workbook, tableId + "|ci")
+                            ?? CellText(metadata, row, 4);
+                        var rowInput = RememberedCellAddress(workbook, tableId + "|ri")
+                            ?? CellText(metadata, row, 5);
                         overrides.Add(new DataTableOverride
                         {
                             SheetName = sheetName,
                             RangeAddress = rangeAddress,
-                            AnchorAddress = CellText(metadata, row, 8),
+                            // Derived, never read from column 8. The anchor is
+                            // by definition the body's first cell, so reading it
+                            // as separate text let it drift out of step with the
+                            // range -- a fresh range against a stale anchor put
+                            // the engine's idea of the source formula one row
+                            // off, which is the boundary error this fixes.
+                            AnchorAddress = AnchorOf(rangeAddress),
                             ColumnInputCell = string.IsNullOrWhiteSpace(columnInput) ? null : columnInput,
                             RowInputCell = string.IsNullOrWhiteSpace(rowInput) ? null : rowInput,
                             IsTwoDimensional = CellText(metadata, row, 7) == "1",
@@ -491,10 +545,14 @@ namespace LudicrousSpeed.ExcelAddIn.Services
 
         private static void RestoreOne(Excel.Workbook workbook, Excel.Worksheet metadata, int row)
         {
+            var tableId = CellText(metadata, row, 1);
             var sheetName = CellText(metadata, row, 2);
-            var rangeAddress = CellText(metadata, row, 3);
-            var columnInput = CellText(metadata, row, 4);
-            var rowInput = CellText(metadata, row, 5);
+            var rangeAddress = RememberedBodyAddress(workbook, tableId)
+                ?? CellText(metadata, row, 3);
+            var columnInput = RememberedCellAddress(workbook, tableId + "|ci")
+                ?? CellText(metadata, row, 4);
+            var rowInput = RememberedCellAddress(workbook, tableId + "|ri")
+                ?? CellText(metadata, row, 5);
 
             Excel.Worksheet sheet = FindWorksheet(workbook, sheetName)
                 ?? throw new InvalidOperationException($"sheet '{sheetName}' not found");
