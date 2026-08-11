@@ -26,11 +26,15 @@
   <ItemGroup>
     <!--
       EmbedInteropTypes matters more than it looks. A COM add-in is loaded by
-      Outlook, so the CLR's probing path is Outlook's own folder, not ours --
-      a dependency sitting next to this DLL would simply not be found, and the
-      add-in would fail at load with an assembly-load error pointing nowhere
-      useful. Embedding the interop types it uses keeps the whole add-in to a
-      single file with nothing to resolve.
+      Outlook, so the CLR's probing path is Outlook's own folder rather than
+      ours. A dependency sitting next to this DLL would simply not be found,
+      and the add-in would fail at load with an assembly-load error pointing
+      nowhere useful. Embedding the interop types it uses keeps the whole
+      add-in to a single file with nothing to resolve.
+
+      (Prose here avoids the double-hyphen used as a dash elsewhere in this
+      repo: XML forbids it inside a comment, and MSBuild rejects the whole
+      project file rather than just the comment.)
     -->
     <PackageReference Include="Microsoft.Office.Interop.Outlook" Version="15.0.4797.1004">
       <EmbedInteropTypes>true</EmbedInteropTypes>
