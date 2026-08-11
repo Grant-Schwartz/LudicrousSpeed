@@ -318,7 +318,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
         public static object LsLive(
             [ExcelArgument(
                 Name = "cell",
-                Description = "Cell to mirror: a reference like E2, or text like \"Sheet1!E2\"",
+                Description = "Cell to mirror. Omit it to mirror this cell, which is what generated tables do.",
                 AllowReference = true)]
             object cell)
         {
@@ -327,6 +327,35 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             // is what =LS.LIVE(E2) needs -- without it Excel passes E2's
             // contents and the lookup is for an address named "45378".
             string key;
+            if (cell is ExcelMissing || cell is ExcelEmpty)
+            {
+                // Self-locating. Generated table cells hold =LS.LIVE() with no
+                // argument, so nothing in the formula records where the cell
+                // is. An address written into the formula as text is invisible
+                // to Excel's reference fixups: insert a row above a converted
+                // table and every cell keeps requesting the value for the
+                // address it used to occupy, so the grid silently shows the
+                // right numbers in the wrong places. Asking Excel who is
+                // calling removes the stored address, and with it the entire
+                // failure mode.
+                if (XlCall.TryExcel(XlCall.xlfCaller, out var caller) == XlCall.XlReturn.XlReturnSuccess
+                    && caller is ExcelReference callerReference)
+                {
+                    key = LiveValueService.AddressFromReference(callerReference);
+                    if (key.Length == 0)
+                    {
+                        return ExcelError.ExcelErrorRef;
+                    }
+
+                    return ExcelAsyncUtil.Observe(
+                        "LS.LIVE",
+                        key,
+                        () => LiveValueService.GetOrCreate(key));
+                }
+
+                return ExcelError.ExcelErrorRef;
+            }
+
             if (cell is ExcelReference reference)
             {
                 key = LiveValueService.AddressFromReference(reference);

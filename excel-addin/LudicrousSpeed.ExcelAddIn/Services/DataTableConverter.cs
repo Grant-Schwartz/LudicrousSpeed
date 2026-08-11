@@ -124,6 +124,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             // Record before destroying anything, so a restore is possible even
             // if the write below fails partway.
             RecordRestoreInfo(metadata, region);
+            RememberBody(workbook, region.TableId, body);
 
             // Clearing the range removes the {=TABLE()} array formula. Excel
             // refuses to modify part of an array, so the whole body goes at
@@ -137,12 +138,12 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                 for (var c = 0; c < body.Columns.Count; c++)
                 {
                     Excel.Range cell = (Excel.Range)sheet.Cells[firstRow + r, firstColumn + c];
-                    var address = ColumnLetters(firstColumn + c)
-                        + (firstRow + r).ToString(CultureInfo.InvariantCulture);
-                    // Sheet name is quoted because model sheets routinely
-                    // contain spaces and parentheses, e.g. LBO (Share Price).
-                    cell.Formula =
-                        $"={LiveFunction}(\"{EscapeForFormula(region.SheetName)}!{address}\")";
+                    // No address in the formula. Writing one as text made the
+                    // cell request a fixed address forever: Excel adjusts
+                    // references when rows are inserted, but not text, so the
+                    // table quietly displayed correct values in the wrong
+                    // places. LS.LIVE with no argument asks Excel where it is.
+                    cell.Formula = $"={LiveFunction}()";
                 }
             }
         }
@@ -241,13 +242,13 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                 // nothing to rebuild and must skip it rather than fabricate one.
                 ((Excel.Range)metadata.Cells[row, 11]).Value2 = "1";
 
+                RememberBody(workbook, $"live-{sheetName}!{bodyAddress}", sheet.Range[bodyAddress]);
+
                 for (var r = firstRow + 1; r <= lastRow; r++)
                 {
                     for (var c = firstColumn + 1; c <= lastColumn; c++)
                     {
-                        var address = ColumnLetters(c) + r.ToString(CultureInfo.InvariantCulture);
-                        ((Excel.Range)sheet.Cells[r, c]).Formula =
-                            $"={LiveFunction}(\"{EscapeForFormula(sheetName)}!{address}\")";
+                        ((Excel.Range)sheet.Cells[r, c]).Formula = $"={LiveFunction}()";
                     }
                 }
             }
@@ -258,6 +259,69 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             result.Message =
                 $"Created a live {result.Rows} x {result.Columns} data table at {sheetName}!{bodyAddress}.";
             return result;
+        }
+
+        /// <summary>
+        /// Records a table's body range as a hidden defined name, and reads it
+        /// back at its current location.
+        ///
+        /// The stored range_address is text, so it says where the table was
+        /// when it was converted, not where it is now. Excel maintains defined
+        /// names across row and column insertion; text does not move. Without
+        /// this the engine keeps computing the region the table used to occupy.
+        /// The stored text stays as a fallback for workbooks converted before
+        /// this existed, and for the case where someone deletes the name.
+        /// </summary>
+        private static string RangeNameFor(string tableId)
+        {
+            var buffer = new char[tableId.Length];
+            for (var i = 0; i < tableId.Length; i++)
+            {
+                buffer[i] = char.IsLetterOrDigit(tableId[i]) ? tableId[i] : '_';
+            }
+
+            return "_LS_dt_" + new string(buffer);
+        }
+
+        private static void RememberBody(Excel.Workbook workbook, string tableId, Excel.Range body)
+        {
+            try
+            {
+                Excel.Name added = workbook.Names.Add(Name: RangeNameFor(tableId), RefersTo: body);
+                // Hidden so it never shows up in the user's Name Manager.
+                added.Visible = false;
+            }
+            catch (Exception)
+            {
+                // Falls back to the stored text, which is what happened before
+                // this existed. Not worth failing a conversion over.
+            }
+        }
+
+        private static string? RememberedBodyAddress(Excel.Workbook workbook, string tableId)
+        {
+            try
+            {
+                var target = RangeNameFor(tableId);
+                foreach (Excel.Name candidate in workbook.Names)
+                {
+                    if (!string.Equals(candidate.Name, target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    Excel.Range range = candidate.RefersToRange;
+                    return "$" + ColumnLetters(range.Column) + "$" + range.Row
+                        + ":$" + ColumnLetters(range.Column + range.Columns.Count - 1)
+                        + "$" + (range.Row + range.Rows.Count - 1);
+                }
+            }
+            catch (Exception)
+            {
+                // A name pointing at deleted cells throws on RefersToRange.
+            }
+
+            return null;
         }
 
         private static string QualifiedAddress(Excel.Range cell)
@@ -296,7 +360,10 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                     }
 
                     var sheetName = CellText(metadata, row, 2);
-                    var rangeAddress = CellText(metadata, row, 3);
+                    // Current location first; the recorded text is only a
+                    // fallback, because it cannot follow inserted rows.
+                    var rangeAddress = RememberedBodyAddress(workbook, tableId)
+                        ?? CellText(metadata, row, 3);
                     var alreadyRestored = !string.IsNullOrWhiteSpace(CellText(metadata, row, 10));
                     if (!alreadyRestored
                         && !string.IsNullOrWhiteSpace(sheetName)
