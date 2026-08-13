@@ -296,6 +296,14 @@ namespace LudicrousSpeed.ExcelAddIn
                     return;
                 }
 
+                // A warm run would skip this table entirely. Only tables the
+                // dependency graph marks dirty are evaluated, and one that has
+                // just been created is downstream of nothing that changed --
+                // so it gets counted as "reused" with nothing to reuse, and
+                // every cell shows the not-published placeholder forever.
+                dynamic activeWorkbook = excel.ActiveWorkbook;
+                changeTracker.RequestFullReload((object)activeWorkbook);
+
                 // The body holds LS.LIVE formulas with nothing behind them yet,
                 // so without this the user is left looking at a grid of #N/A.
                 SetStatusBar(created.Message + " Calculating...");

@@ -90,6 +90,34 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             }
         }
 
+        /// <summary>
+        /// Makes the next run reload the workbook instead of reusing the cached
+        /// model.
+        ///
+        /// Building a data table happens with tracking suspended, so the
+        /// tracker sees no edits and the next run comes through warm. A warm
+        /// run evaluates only the tables the dependency graph marks dirty --
+        /// and a table that has just been created sits downstream of nothing
+        /// that changed, so it is skipped and counted as "reused" despite
+        /// never having been computed once. There is nothing to reuse, so its
+        /// cells have no value to show and sit on the not-published
+        /// placeholder. A cold run passes no changed cells at all, which makes
+        /// every table eligible.
+        /// </summary>
+        public void RequestFullReload(object workbookObject)
+        {
+            var workbookId = GetWorkbookId(workbookObject);
+            if (string.IsNullOrWhiteSpace(workbookId))
+            {
+                return;
+            }
+
+            lock (gate)
+            {
+                GetOrCreateState(workbookId).ForceReload = true;
+            }
+        }
+
         public void MarkRunSucceeded(WorkbookSnapshot snapshot)
         {
             if (string.IsNullOrWhiteSpace(snapshot.WorkbookId))
