@@ -34,6 +34,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
     {
         private const string MetadataSheetName = WorkbookChangeTracker.DataTableSheetName;
         private const string LiveFunction = "LS.LIVE";
+        private const string RangeNamePrefix = "_LS_dt_";
 
         private readonly WorkbookChangeTracker changeTracker;
 
@@ -289,7 +290,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                 buffer[i] = char.IsLetterOrDigit(tableId[i]) ? tableId[i] : '_';
             }
 
-            return "_LS_dt_" + new string(buffer);
+            return RangeNamePrefix + new string(buffer);
         }
 
         private static void RememberBody(Excel.Workbook workbook, string tableId, Excel.Range body)
@@ -324,51 +325,95 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             }
         }
 
-        private static string? RememberedCellAddress(Excel.Workbook workbook, string key)
+        /// <summary>
+        /// Every tracked range in the workbook, read in a single pass.
+        ///
+        /// This exists because the obvious shape was far too slow. Looking a
+        /// name up by scanning workbook.Names costs a COM round trip per name
+        /// inspected, and the lookups happen three times per table -- body plus
+        /// two input cells -- on every run. A model with 47 tables and a few
+        /// hundred defined names therefore spent tens of thousands of cross
+        /// process calls before the engine was even handed the workbook, which
+        /// put roughly ten seconds onto a six second recalculation.
+        ///
+        /// One pass, then dictionary lookups.
+        /// </summary>
+        private static Dictionary<string, Excel.Range> TrackedRanges(Excel.Workbook workbook)
         {
+            var tracked = new Dictionary<string, Excel.Range>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                var target = RangeNameFor(key);
                 foreach (Excel.Name candidate in workbook.Names)
                 {
-                    if (string.Equals(candidate.Name, target, StringComparison.OrdinalIgnoreCase))
+                    string name;
+                    try
                     {
-                        return QualifiedAddress(candidate.RefersToRange);
+                        name = Convert.ToString(candidate.Name, CultureInfo.InvariantCulture) ?? "";
                     }
-                }
-            }
-            catch (Exception)
-            {
-                // Name pointing at deleted cells; fall back to the text.
-            }
-
-            return null;
-        }
-
-        private static string? RememberedBodyAddress(Excel.Workbook workbook, string tableId)
-        {
-            try
-            {
-                var target = RangeNameFor(tableId);
-                foreach (Excel.Name candidate in workbook.Names)
-                {
-                    if (!string.Equals(candidate.Name, target, StringComparison.OrdinalIgnoreCase))
+                    catch (Exception)
                     {
                         continue;
                     }
 
-                    Excel.Range range = candidate.RefersToRange;
-                    return "$" + ColumnLetters(range.Column) + "$" + range.Row
-                        + ":$" + ColumnLetters(range.Column + range.Columns.Count - 1)
-                        + "$" + (range.Row + range.Rows.Count - 1);
+                    if (!name.StartsWith(RangeNamePrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        // Throws for a name whose cells have been deleted, which
+                        // simply means no tracked location for that table.
+                        tracked[name] = candidate.RefersToRange;
+                    }
+                    catch (Exception)
+                    {
+                    }
                 }
             }
             catch (Exception)
             {
-                // A name pointing at deleted cells throws on RefersToRange.
+                // No names at all is a normal state, not a failure.
             }
 
-            return null;
+            return tracked;
+        }
+
+        private static string? RememberedCellAddress(
+            Dictionary<string, Excel.Range> tracked,
+            string key)
+        {
+            try
+            {
+                return tracked.TryGetValue(RangeNameFor(key), out Excel.Range range)
+                    ? QualifiedAddress(range)
+                    : null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        private static string? RememberedBodyAddress(
+            Dictionary<string, Excel.Range> tracked,
+            string tableId)
+        {
+            try
+            {
+                if (!tracked.TryGetValue(RangeNameFor(tableId), out Excel.Range range))
+                {
+                    return null;
+                }
+
+                return "$" + ColumnLetters(range.Column) + "$" + range.Row
+                    + ":$" + ColumnLetters(range.Column + range.Columns.Count - 1)
+                    + "$" + (range.Row + range.Rows.Count - 1);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
         }
 
         private static string QualifiedAddress(Excel.Range cell)
@@ -398,6 +443,8 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                     return overrides;
                 }
 
+                var tracked = TrackedRanges(workbook);
+
                 var row = 2; // row 1 is the header
                 while (true)
                 {
@@ -421,16 +468,16 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                     var sheetName = CellText(metadata, row, 2);
                     // Current location first; the recorded text is only a
                     // fallback, because it cannot follow inserted rows.
-                    var rangeAddress = RememberedBodyAddress(workbook, tableId)
+                    var rangeAddress = RememberedBodyAddress(tracked, tableId)
                         ?? CellText(metadata, row, 3);
                     var alreadyRestored = !string.IsNullOrWhiteSpace(CellText(metadata, row, 10));
                     if (!alreadyRestored
                         && !string.IsNullOrWhiteSpace(sheetName)
                         && !string.IsNullOrWhiteSpace(rangeAddress))
                     {
-                        var columnInput = RememberedCellAddress(workbook, tableId + "|ci")
+                        var columnInput = RememberedCellAddress(tracked, tableId + "|ci")
                             ?? CellText(metadata, row, 4);
-                        var rowInput = RememberedCellAddress(workbook, tableId + "|ri")
+                        var rowInput = RememberedCellAddress(tracked, tableId + "|ri")
                             ?? CellText(metadata, row, 5);
                         overrides.Add(new DataTableOverride
                         {
@@ -493,6 +540,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                 excel.Calculation = Excel.XlCalculation.xlCalculationManual;
                 excel.ScreenUpdating = false;
                 using var trackingSuspension = changeTracker.SuspendTracking();
+                var tracked = TrackedRanges(workbook);
 
                 var row = 2; // row 1 is the header
                 while (true)
@@ -521,7 +569,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
 
                     try
                     {
-                        RestoreOne(workbook, metadata, row);
+                        RestoreOne(workbook, metadata, row, tracked);
                         // The native table is back, so the engine will
                         // discover it again; replaying the override would now
                         // shadow the real thing.
@@ -549,15 +597,19 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             return result;
         }
 
-        private static void RestoreOne(Excel.Workbook workbook, Excel.Worksheet metadata, int row)
+        private static void RestoreOne(
+            Excel.Workbook workbook,
+            Excel.Worksheet metadata,
+            int row,
+            Dictionary<string, Excel.Range> tracked)
         {
             var tableId = CellText(metadata, row, 1);
             var sheetName = CellText(metadata, row, 2);
-            var rangeAddress = RememberedBodyAddress(workbook, tableId)
+            var rangeAddress = RememberedBodyAddress(tracked, tableId)
                 ?? CellText(metadata, row, 3);
-            var columnInput = RememberedCellAddress(workbook, tableId + "|ci")
+            var columnInput = RememberedCellAddress(tracked, tableId + "|ci")
                 ?? CellText(metadata, row, 4);
-            var rowInput = RememberedCellAddress(workbook, tableId + "|ri")
+            var rowInput = RememberedCellAddress(tracked, tableId + "|ri")
                 ?? CellText(metadata, row, 5);
 
             Excel.Worksheet sheet = FindWorksheet(workbook, sheetName)
