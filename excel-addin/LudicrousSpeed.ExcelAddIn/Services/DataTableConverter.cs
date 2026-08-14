@@ -221,8 +221,10 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             // whole body as user-changed input.
             using (var trackingSuspension = changeTracker.SuspendTracking())
             {
-                var row = NextMetadataRow(metadata);
-                ((Excel.Range)metadata.Cells[row, 1]).Value2 = $"live-{sheetName}!{bodyAddress}";
+                var liveTableId = $"live-{sheetName}!{bodyAddress}";
+                var existingRow = FindActiveMetadataRow(metadata, liveTableId);
+                var row = existingRow > 0 ? existingRow : NextMetadataRow(metadata);
+                ((Excel.Range)metadata.Cells[row, 1]).Value2 = liveTableId;
                 ((Excel.Range)metadata.Cells[row, 2]).Value2 = sheetName;
                 ((Excel.Range)metadata.Cells[row, 3]).Value2 = bodyAddress;
                 // Excel's dialog labels and the stored fields are transposed:
@@ -247,7 +249,6 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                 // nothing to rebuild and must skip it rather than fabricate one.
                 ((Excel.Range)metadata.Cells[row, 11]).Value2 = "1";
 
-                var liveTableId = $"live-{sheetName}!{bodyAddress}";
                 RememberBody(workbook, liveTableId, sheet.Range[bodyAddress]);
                 RememberCell(workbook, liveTableId + "|ci", QualifiedAddress(excelRowInput));
                 RememberCell(workbook, liveTableId + "|ri", QualifiedAddress(excelColumnInput));
@@ -386,6 +387,7 @@ namespace LudicrousSpeed.ExcelAddIn.Services
         public List<DataTableOverride> ReadOverrides()
         {
             var overrides = new List<DataTableOverride>();
+            var seenTableIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 dynamic excel = ExcelDnaUtil.Application;
@@ -403,6 +405,17 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                     if (string.IsNullOrWhiteSpace(tableId))
                     {
                         break;
+                    }
+
+                    // First row wins. A workbook converted before the
+                    // dedupe above can still hold several rows for one table,
+                    // the older ones naming ranges that have since moved, and
+                    // handing the engine all of them is what produced tables
+                    // computed at their previous location.
+                    if (!seenTableIds.Add(tableId))
+                    {
+                        row++;
+                        continue;
                     }
 
                     var sheetName = CellText(metadata, row, 2);
@@ -498,15 +511,13 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                         continue;
                     }
 
-                    // Built live by New Live Table -- there was never a native
-                    // table here, so there is nothing to restore it to. Leave
-                    // it alone rather than fabricating one the user never had.
-                    if (!string.IsNullOrWhiteSpace(CellText(metadata, row, 11)))
-                    {
-                        result.SkippedCreatedLive++;
-                        row++;
-                        continue;
-                    }
+                    // Live-built tables are rebuilt too. Skipping them was
+                    // wrong: "there was never a native table here" is true and
+                    // irrelevant, because RestoreOne does not put a saved table
+                    // back, it constructs one from the body range, the two
+                    // input cells and the source formula -- all of which a live
+                    // table records. Being able to hand the workbook to someone
+                    // without the add-in is the point of the command.
 
                     try
                     {
@@ -526,13 +537,8 @@ namespace LudicrousSpeed.ExcelAddIn.Services
                     row++;
                 }
 
-                result.Message = $"Restored {result.Restored} native data table(s). Failed {result.Failed}.";
-                if (result.SkippedCreatedLive > 0)
-                {
-                    result.Message +=
-                        $" Left {result.SkippedCreatedLive} live-built table(s) alone -- those never had a"
-                        + " native table to restore.";
-                }
+                result.Message =
+                    $"Rebuilt {result.Restored} native Excel data table(s). Failed {result.Failed}.";
             }
             finally
             {
@@ -624,7 +630,10 @@ namespace LudicrousSpeed.ExcelAddIn.Services
 
         private static void RecordRestoreInfo(Excel.Worksheet metadata, DataTableRegionInfo region)
         {
-            var row = NextMetadataRow(metadata);
+            // Overwrite this table's live row if it has one, rather than
+            // stacking another beside it.
+            var existing = FindActiveMetadataRow(metadata, region.TableId);
+            var row = existing > 0 ? existing : NextMetadataRow(metadata);
             ((Excel.Range)metadata.Cells[row, 1]).Value2 = region.TableId;
             ((Excel.Range)metadata.Cells[row, 2]).Value2 = region.SheetName;
             ((Excel.Range)metadata.Cells[row, 3]).Value2 = region.RangeAddress;
@@ -638,6 +647,34 @@ namespace LudicrousSpeed.ExcelAddIn.Services
             ((Excel.Range)metadata.Cells[row, 8]).Value2 = AnchorOf(region.RangeAddress);
             ((Excel.Range)metadata.Cells[row, 9]).Value2 = region.Dtr ? 1d : 0d;
             ((Excel.Range)metadata.Cells[row, 10]).Value2 = "";
+        }
+
+        /// <summary>
+        /// The row already describing this table, or 0. A table converted,
+        /// restored and converted again used to append a row each time, and
+        /// ReadOverrides handed every one of them to the engine -- so it
+        /// received several generations of the same table at once, the older
+        /// ones pointing at ranges that had since moved.
+        /// </summary>
+        private static int FindActiveMetadataRow(Excel.Worksheet metadata, string tableId)
+        {
+            var row = 2;
+            while (true)
+            {
+                var candidate = CellText(metadata, row, 1);
+                if (string.IsNullOrWhiteSpace(candidate))
+                {
+                    return 0;
+                }
+
+                if (string.Equals(candidate, tableId, StringComparison.OrdinalIgnoreCase)
+                    && string.IsNullOrWhiteSpace(CellText(metadata, row, 10)))
+                {
+                    return row;
+                }
+
+                row++;
+            }
         }
 
         private static int NextMetadataRow(Excel.Worksheet metadata)
@@ -771,7 +808,6 @@ namespace LudicrousSpeed.ExcelAddIn.Services
     {
         public int Restored { get; set; }
         public int Failed { get; set; }
-        public int SkippedCreatedLive { get; set; }
         public List<string> Errors { get; } = new List<string>();
         public string Message { get; set; } = "";
     }
