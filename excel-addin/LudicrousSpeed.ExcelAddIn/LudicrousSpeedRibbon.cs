@@ -79,6 +79,10 @@ namespace LudicrousSpeed.ExcelAddIn
 
         public void AutoOpen()
         {
+            // Before anything can call into the engine. Resolving it by bare
+            // name depends on Excel's working directory, which is only the
+            // add-in's folder by luck and never after a restart.
+            NativeEngineClient.EnsureNativeLibraryLoaded();
             changeTracker.Start();
             CalculationKeyBinding.Initialize(() => Run("recalculate", includeExcelBaseline: false));
         }
@@ -105,10 +109,11 @@ namespace LudicrousSpeed.ExcelAddIn
 <customUI xmlns='http://schemas.microsoft.com/office/2009/07/customui'>
   <ribbon>
     <tabs>
-      <tab id='LudicrousSpeedTab' label='LudicrousSpeed'>
+      <tab id='LudicrousSpeedTab' label='LudicrousSpeed' keytip='L'>
         <group id='LudicrousSpeedCalcGroup' label='Calculation'>
           <button id='RecalculateWorkbookButton'
                   label='Recalculate with LudicrousSpeed'
+                  keytip='R'
                   size='large'
                   imageMso='CalculateNow'
                   onAction='RecalculateWithLudicrousSpeed'
@@ -116,6 +121,7 @@ namespace LudicrousSpeed.ExcelAddIn
                   supertip='Evaluate the active workbook with IronCalc first and Excel fallback for unsupported regions.' />
           <button id='BenchmarkWorkbookButton'
                   label='Benchmark'
+                  keytip='B'
                   size='large'
                   imageMso='CalculateSheet'
                   onAction='BenchmarkWorkbook'
@@ -123,6 +129,7 @@ namespace LudicrousSpeed.ExcelAddIn
                   supertip='Compare Excel full rebuild timing against the LudicrousSpeed prototype engine.' />
           <toggleButton id='InterceptF9Toggle'
                   label='F9 Uses LudicrousSpeed'
+                  keytip='F'
                   imageMso='CalculateNow'
                   onAction='ToggleInterceptF9'
                   getPressed='GetInterceptF9Pressed'
@@ -130,6 +137,7 @@ namespace LudicrousSpeed.ExcelAddIn
                   supertip='Press F9 to recalculate with LudicrousSpeed instead of Excel. Shift+F9 and Ctrl+Alt+F9 still run Excel&apos;s own calculation. Setting is remembered between sessions.' />
           <toggleButton id='ReportToggle'
                   label='Report'
+                  keytip='P'
                   imageMso='ErrorChecking'
                   onAction='ToggleReport'
                   getPressed='GetReportPressed'
@@ -137,6 +145,7 @@ namespace LudicrousSpeed.ExcelAddIn
                   supertip='Writes _LudicrousSpeed_Report: how long the run took, how much of the workbook the engine could vouch for, and anything it could not. Off by default so a plain recalculation costs only the calculation.' />
           <toggleButton id='DevModeToggle'
                   label='Dev Mode'
+                  keytip='M'
                   imageMso='CalculateSheet'
                   onAction='ToggleDevMode'
                   getPressed='GetDevModePressed'
@@ -146,6 +155,7 @@ namespace LudicrousSpeed.ExcelAddIn
         <group id='LudicrousSpeedDataTableGroup' label='Data Tables'>
           <button id='NewLiveTableButton'
                   label='New Live Table'
+                  keytip='D'
                   size='large'
                   imageMso='TableInsert'
                   onAction='NewLiveDataTable'
@@ -153,6 +163,7 @@ namespace LudicrousSpeed.ExcelAddIn
                   supertip='The Alt+D+T equivalent: select the whole table (formula in the top-left corner, column inputs across the top, row inputs down the left side), then pick the two input cells. Builds an engine-driven table directly, so Excel never re-runs the source formula once per scenario.' />
           <button id='ConvertDataTablesButton'
                   label='Convert to Live'
+                  keytip='C'
                   size='large'
                   imageMso='Refresh'
                   onAction='ConvertDataTablesToLive'
@@ -160,6 +171,7 @@ namespace LudicrousSpeed.ExcelAddIn
                   supertip='Replace native Excel data tables with LS.LIVE cells driven by the LudicrousSpeed kernel. Excel stops re-running the table once per scenario; the source formula and axis inputs are left untouched.' />
           <button id='RestoreDataTablesButton'
                   label='Restore Native'
+                  keytip='V'
                   size='large'
                   imageMso='Undo'
                   onAction='RestoreNativeDataTables'

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using ExcelDna.Integration;
 using Newtonsoft.Json;
 using LudicrousSpeed.ExcelAddIn.Models;
 
@@ -11,6 +12,62 @@ namespace LudicrousSpeed.ExcelAddIn.Interop
     internal sealed class NativeEngineClient
     {
         private const string WindowsDll = "ludicrous_engine.dll";
+
+        private static bool nativeLibraryResolved;
+        private static string nativeLibraryPath = "";
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr LoadLibraryW(string fileName);
+
+        /// <summary>
+        /// Loads the engine from the add-in's own folder, before anything
+        /// P/Invokes into it.
+        ///
+        /// DllImport by bare name resolves through Windows' standard search
+        /// order: Excel's own directory, the current working directory, then
+        /// PATH. The folder the .xll was loaded from is not in that list. So
+        /// the engine sitting directly beside the add-in was found only when
+        /// Excel's working directory happened to be that folder -- true right
+        /// after browsing to it in the add-ins dialog, false after a restart,
+        /// which is why reinstalling appeared to fix it and never lasted.
+        ///
+        /// Loading it once by absolute path puts the module in the process. The
+        /// later DllImport matches on base name against what is already loaded
+        /// and never searches at all.
+        /// </summary>
+        public static void EnsureNativeLibraryLoaded()
+        {
+            if (nativeLibraryResolved)
+            {
+                return;
+            }
+
+            nativeLibraryResolved = true;
+            try
+            {
+                var addInFolder = Path.GetDirectoryName(ExcelDnaUtil.XllPath);
+                if (string.IsNullOrEmpty(addInFolder))
+                {
+                    return;
+                }
+
+                var candidate = Path.Combine(addInFolder, WindowsDll);
+                if (!File.Exists(candidate))
+                {
+                    return;
+                }
+
+                if (LoadLibraryW(candidate) != IntPtr.Zero)
+                {
+                    nativeLibraryPath = candidate;
+                }
+            }
+            catch (Exception)
+            {
+                // Falls back to the normal search order, which is where this
+                // started. Never worth failing add-in startup over.
+            }
+        }
 
         public EngineResponse Run(WorkbookSnapshot snapshot, out long nativeCallMs)
         {
@@ -36,8 +93,12 @@ namespace LudicrousSpeed.ExcelAddIn.Interop
             {
                 stopwatch.Stop();
                 nativeCallMs = stopwatch.ElapsedMilliseconds;
+                var looked = string.IsNullOrEmpty(nativeLibraryPath)
+                    ? Path.GetDirectoryName(ExcelDnaUtil.XllPath) ?? "the add-in folder"
+                    : nativeLibraryPath;
                 return EngineResponse.Failed(
-                    $"Could not find {WindowsDll}. Build the Rust engine and copy the native library beside the Excel add-in.");
+                    $"Could not load {WindowsDll}. Expected it beside the add-in, at {looked}. "
+                    + "Reinstalling with Install.cmd puts it there.");
             }
             catch (Exception ex)
             {
